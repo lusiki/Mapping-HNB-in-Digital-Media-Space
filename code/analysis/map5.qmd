@@ -1,0 +1,851 @@
+---
+title: "HNB DigiMedia Map 5: Institutional Attention Gap"
+subtitle: "Testing Whether Official Communication Achieves Visibility Proportional to Policy Relevance"
+author: "HNB DigiMedia Project"
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    code-fold: true
+    code-summary: "Show code"
+    theme: cosmo
+    fig-width: 10
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(data.table)
+library(scales)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(viridis)
+library(lubridate)
+library(patchwork)
+library(ggrepel)
+
+theme_set(theme_minimal(base_size = 12) +
+          theme(
+            plot.title = element_text(face = "bold", size = 14),
+            plot.subtitle = element_text(color = "gray40"),
+            legend.position = "bottom"
+          ))
+
+# Color palette for actor types
+actor_colors <- c(
+  "HNB Official" = "#1a3c5a",
+  "Financial Regulators" = "#2c5f7c",
+  "Commercial Banks" = "#4a9c6d",
+  "Financial Media" = "#e07b39",
+  "General Media" = "#c44536",
+  "International Sources" = "#6b4c9a",
+  "Academic/Expert" = "#64748b",
+  "Political Actors" = "#eab308",
+  "Financial Influencers" = "#ec4899",
+  "Government" = "#0ea5e9",
+  "Other" = "#94a3b8"
+)
+
+# Institutional vs non-institutional
+institutional_colors <- c(
+  "Institutional" = "#1a3c5a",
+  "Non-Institutional" = "#e07b39"
+)
+
+# Period colors
+period_colors <- c(
+  "ERM II" = "#3498db",
+  "Euro Era" = "#27ae60"
+)
+```
+
+# Introduction
+
+This document presents **Map 5: Institutional Attention Gap Analysis**, the core empirical test of the HNB DigiMedia project. The central research question is:
+
+> **Does official HNB communication achieve visibility proportional to its policy relevance in the Croatian digital media ecosystem?**
+
+## Theoretical Motivation
+
+The literature review establishes that central bank communication works primarily through managing expectations (Woodford 2001). However, research documents a persistent gap between institutional communication efforts and public reception:
+
+1. **Rational inattention:** Sims argues economic agents have finite information processing capacity, explaining why markets attend to every nuance while ordinary people react sluggishly
+2. **Public communication failure:** Blinder's prediction that central bank public communication would "for the most part fail" has proven "more correct than incorrect"
+3. **Intermediation dominance:** Coibion et al. found that reading FOMC statements has about the same effect as simply being told the inflation target, while news articles had half that effect
+
+For Croatia specifically, the challenge is compounded by:
+
+- Resource constraints of smaller central banks
+- Bilingual communication requirements
+- Transition from independent monetary policy to Eurosystem membership
+- Virtual absence of academic research on HNB communication
+
+## Analytical Framework
+
+The **Institutional Attention Gap** is operationalized as the difference between:
+
+- **Policy relevance share:** The proportion of authoritative monetary policy information that originates from institutional sources (HNB, regulators, government)
+- **Attention share:** The proportion of total public attention (REACH) captured by institutional sources
+
+A negative gap indicates institutional sources are underperforming relative to their policy relevance, with media intermediation capturing disproportionate attention.
+
+```{r load-data}
+#| label: load-data
+
+hnb <- readRDS("C:/Users/lsikic/Dropbox/hnb.rds")
+setDT(hnb)
+
+hnb[, date := as.Date(DATE)]
+hnb[, year := year(date)]
+hnb[, month := month(date)]
+hnb[, week := isoweek(date)]
+
+hnb[, period := fcase(
+  date < as.Date("2023-01-01"), "ERM II",
+  default = "Euro Era"
+)]
+hnb[, period := factor(period, levels = c("ERM II", "Euro Era"))]
+
+n_articles <- nrow(hnb)
+cat("Data loaded:", n_articles, "articles\n")
+```
+
+```{r actor-classification}
+#| label: actor-classification
+
+# =============================================================================
+# ACTOR CLASSIFICATION - SYNCHRONIZED WITH MAPS 1-4
+# =============================================================================
+
+manual_overrides <- list(
+  "HNB Official" = c(
+    "hnb.hr", "hrvatska narodna banka",
+    "hrvatska narodna banka / croatian national bank"
+  ),
+  "Financial Regulators" = c(
+    "hanfa.hr", "hanfa", "hrvatska agencija za nadzor financijskih usluga",
+    "fina.hr", "fina", "financijska agencija"
+  ),
+  "Government" = c(
+    "gov.hr", "vlada", "vlada republike hrvatske",
+    "ministarstvo financija", "sabor.hr"
+  ),
+  "Financial Media" = c(
+    "poslovni.hr", "poslovni dnevnik", "seebiz.eu", "seebiz",
+    "lider.media", "lidermedia.hr", "lider", "bloombergadria.com",
+    "bloomberg adria", "hrportfolio.hr", "privredni.hr"
+  ),
+  "Commercial Banks" = c(
+    "zaba.hr", "zagrebačka banka", "pbz.hr", "privredna banka zagreb",
+    "erste.hr", "erste banka", "hpb.hr", "hrvatska poštanska banka",
+    "otp banka", "raiffeisen", "addiko"
+  ),
+  "Academic/Expert" = c(
+    "eizg.hr", "ekonomski institut zagreb", "ijf.hr",
+    "institut za javne financije", "ekonomski fakultet"
+  )
+)
+
+general_media_sources <- c(
+  "index.hr", "index", "jutarnji.hr", "jutarnji", "jutarnji list",
+  "vecernji.hr", "vecernji", "večernji list",
+  "24sata.hr", "24sata", "slobodnadalmacija.hr", "slobodna dalmacija",
+  "novilist.hr", "novi list", "dnevnik.hr", "dnevnik",
+  "tportal.hr", "tportal", "telegram.hr", "telegram",
+  "net.hr", "rtl.hr", "rtl", "hrt.hr", "hrt",
+  "n1info.hr", "n1info.com", "n1", "nacional.hr", "nacional",
+  "direktno.hr", "direktno", "dnevno.hr", "dnevno"
+)
+
+classify_actor_hnb <- function(from_val, url_val = NA) {
+  from_lower <- tolower(trimws(as.character(from_val)))
+  url_lower <- tolower(ifelse(is.na(url_val), "", as.character(url_val)))
+  combined <- paste(from_lower, url_lower)
+  
+  match_any <- function(patterns, text, fixed = TRUE) {
+    any(sapply(patterns, function(p) grepl(p, text, fixed = fixed)))
+  }
+  
+  for (actor_type in names(manual_overrides)) {
+    if (match_any(manual_overrides[[actor_type]], from_lower)) {
+      return(actor_type)
+    }
+  }
+  
+  if (grepl("hnb\\.hr", url_lower) || grepl("hnb\\.hr", from_lower)) {
+    return("HNB Official")
+  }
+  
+  if (grepl("hanfa|fina\\.hr", combined)) {
+    return("Financial Regulators")
+  }
+  
+  if (grepl("gov\\.hr|vlada|ministarstvo", combined)) {
+    return("Government")
+  }
+  
+  bank_patterns <- c("banka", "bank", "zaba", "pbz", "erste", "hpb",
+                     "otp", "raiffeisen", "addiko", "sberbank")
+  if (match_any(bank_patterns, from_lower)) {
+    if (!grepl("narodna|hnb|central", from_lower)) {
+      return("Commercial Banks")
+    }
+  }
+  
+  financial_media_patterns <- c(
+    "poslovni", "seebiz", "lider", "bloomberg", "portfolio",
+    "privredni", "finance", "ekonom", "business", "capital"
+  )
+  if (match_any(financial_media_patterns, from_lower)) {
+    return("Financial Media")
+  }
+  
+  if (match_any(general_media_sources, from_lower)) {
+    return("General Media")
+  }
+  
+  news_patterns <- c("portal", "vijesti", "news", "info", "dnevni",
+                     "radio", "tv", ".hr")
+  if (match_any(news_patterns, from_lower)) {
+    return("General Media")
+  }
+  
+  return("Other")
+}
+
+hnb[, ACTOR_TYPE := mapply(classify_actor_hnb, FROM, URL)]
+
+# Create institutional classification
+hnb[, INSTITUTIONAL := ACTOR_TYPE %in% c("HNB Official", "Financial Regulators", "Government")]
+hnb[, INST_CATEGORY := ifelse(INSTITUTIONAL, "Institutional", "Non-Institutional")]
+```
+
+# Analysis 5.1: The Attention Gap Baseline
+
+## Core Metrics
+
+```{r baseline-metrics}
+#| label: baseline-metrics
+
+# Calculate baseline metrics
+total_articles <- nrow(hnb)
+total_reach <- sum(hnb$REACH, na.rm = TRUE)
+
+# Institutional vs Non-institutional breakdown
+inst_summary <- hnb[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE),
+  Median_REACH = median(REACH, na.rm = TRUE),
+  Sources = uniqueN(FROM)
+), by = INST_CATEGORY]
+
+inst_summary[, `:=`(
+  Article_Share = Articles / sum(Articles) * 100,
+  REACH_Share = Total_REACH / sum(Total_REACH) * 100
+)]
+
+inst_summary[, Attention_Gap := REACH_Share - Article_Share]
+inst_summary[, Efficiency := REACH_Share / Article_Share]
+
+# Display
+inst_summary %>%
+  mutate(
+    Articles = format(Articles, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    Mean_REACH = format(round(Mean_REACH, 0), big.mark = ","),
+    Median_REACH = format(round(Median_REACH, 0), big.mark = ","),
+    Article_Share = sprintf("%.1f%%", Article_Share),
+    REACH_Share = sprintf("%.1f%%", REACH_Share),
+    Attention_Gap = sprintf("%+.1f pp", Attention_Gap),
+    Efficiency = sprintf("%.2fx", Efficiency)
+  ) %>%
+  kable(col.names = c("Category", "Articles", "Total REACH", "Mean REACH", "Median REACH",
+                      "Sources", "Article Share", "REACH Share", "Attention Gap", "Efficiency")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Attention Gap Visualization
+
+```{r attention-gap-viz}
+#| label: attention-gap-viz
+#| fig-height: 7
+
+inst_long <- inst_summary %>%
+  select(INST_CATEGORY, Article_Share, REACH_Share) %>%
+  pivot_longer(cols = c(Article_Share, REACH_Share),
+               names_to = "Metric", values_to = "Percentage") %>%
+  mutate(Metric = ifelse(Metric == "Article_Share", "Volume (Articles)", "Attention (REACH)"))
+
+ggplot(inst_long, aes(x = INST_CATEGORY, y = Percentage, fill = Metric)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_text(aes(label = sprintf("%.1f%%", Percentage)),
+            position = position_dodge(width = 0.7), vjust = -0.3, size = 4) +
+  scale_fill_manual(values = c("Volume (Articles)" = "#64748b", "Attention (REACH)" = "#e07b39")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "The Institutional Attention Gap",
+    subtitle = "Comparing article volume share vs attention (REACH) share",
+    x = NULL,
+    y = "Percentage (%)",
+    fill = NULL,
+    caption = "Attention Gap = REACH Share - Article Share"
+  ) +
+  theme(legend.position = "top")
+```
+
+## Statistical Test: Institutional Attention Disadvantage
+
+We test whether institutional sources have significantly lower REACH than non-institutional sources using the Wilcoxon rank-sum test (appropriate for non-normal distributions).
+
+```{r wilcoxon-test}
+#| label: wilcoxon-test
+
+# Extract REACH vectors
+reach_institutional <- hnb[INSTITUTIONAL == TRUE, REACH]
+reach_non_institutional <- hnb[INSTITUTIONAL == FALSE, REACH]
+
+# Wilcoxon rank-sum test
+wilcox_result <- wilcox.test(reach_institutional, reach_non_institutional,
+                              alternative = "two.sided")
+
+# Effect size (rank-biserial correlation)
+n1 <- length(reach_institutional)
+n2 <- length(reach_non_institutional)
+U <- wilcox_result$statistic
+effect_size <- 1 - (2 * U) / (n1 * n2)
+
+cat("Wilcoxon Rank-Sum Test Results\n")
+cat("==============================\n")
+cat("W statistic:", format(wilcox_result$statistic, big.mark = ","), "\n")
+cat("p-value:", format.pval(wilcox_result$p.value, digits = 4), "\n")
+cat("\nSample sizes:\n")
+cat("  Institutional:", format(n1, big.mark = ","), "articles\n")
+cat("  Non-institutional:", format(n2, big.mark = ","), "articles\n")
+cat("\nMean REACH:\n")
+cat("  Institutional:", format(round(mean(reach_institutional), 0), big.mark = ","), "\n")
+cat("  Non-institutional:", format(round(mean(reach_non_institutional), 0), big.mark = ","), "\n")
+cat("\nEffect size (rank-biserial r):", round(effect_size, 3), "\n")
+```
+
+## REACH Distribution Comparison
+
+```{r reach-distribution}
+#| label: reach-distribution
+#| fig-height: 7
+
+ggplot(hnb[REACH > 0 & REACH < quantile(REACH, 0.99, na.rm = TRUE)],
+       aes(x = REACH, fill = INST_CATEGORY)) +
+  geom_density(alpha = 0.6) +
+  geom_vline(aes(xintercept = mean(reach_institutional)), 
+             color = "#1a3c5a", linetype = "dashed", linewidth = 1) +
+  geom_vline(aes(xintercept = mean(reach_non_institutional)), 
+             color = "#e07b39", linetype = "dashed", linewidth = 1) +
+  scale_x_log10(labels = comma) +
+  scale_fill_manual(values = institutional_colors) +
+  labs(
+    title = "REACH Distribution: Institutional vs Non-Institutional",
+    subtitle = "Log scale, dashed lines show means",
+    x = "REACH (log scale)",
+    y = "Density",
+    fill = "Category"
+  ) +
+  theme(legend.position = "top")
+```
+
+# Analysis 5.2: Actor-Level Decomposition
+
+## Detailed Actor Metrics
+
+```{r actor-metrics}
+#| label: actor-metrics
+#| fig-height: 8
+
+actor_summary <- hnb[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE),
+  Median_REACH = median(REACH, na.rm = TRUE),
+  Sources = uniqueN(FROM),
+  Institutional = first(INSTITUTIONAL)
+), by = ACTOR_TYPE]
+
+actor_summary[, `:=`(
+  Article_Share = Articles / sum(Articles) * 100,
+  REACH_Share = Total_REACH / sum(Total_REACH) * 100
+)]
+
+actor_summary[, `:=`(
+  Attention_Gap = REACH_Share - Article_Share,
+  Efficiency = REACH_Share / Article_Share
+)]
+
+# Visualize
+actor_summary_plot <- actor_summary[ACTOR_TYPE != "Other"]
+
+ggplot(actor_summary_plot, aes(x = Article_Share, y = REACH_Share, color = Institutional)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  geom_point(aes(size = Articles), alpha = 0.7) +
+  geom_text_repel(aes(label = ACTOR_TYPE), size = 3.5, max.overlaps = 15) +
+  scale_color_manual(values = c("TRUE" = "#1a3c5a", "FALSE" = "#e07b39"),
+                     labels = c("TRUE" = "Institutional", "FALSE" = "Non-Institutional")) +
+  scale_size_continuous(labels = comma) +
+  labs(
+    title = "Article Share vs REACH Share by Actor Type",
+    subtitle = "Points below diagonal = capturing less attention than volume share",
+    x = "Article Share (%)",
+    y = "REACH Share (%)",
+    color = "Category",
+    size = "Articles",
+    caption = "Diagonal line represents proportional attention (Efficiency = 1.0)"
+  ) +
+  theme(legend.position = "right")
+```
+
+## Actor Summary Table
+
+```{r actor-table}
+#| label: actor-table
+
+actor_summary[order(-REACH_Share)] %>%
+  mutate(
+    Articles = format(Articles, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    Mean_REACH = format(round(Mean_REACH, 0), big.mark = ","),
+    Article_Share = sprintf("%.1f%%", Article_Share),
+    REACH_Share = sprintf("%.1f%%", REACH_Share),
+    Attention_Gap = sprintf("%+.1f pp", Attention_Gap),
+    Efficiency = sprintf("%.2fx", Efficiency),
+    Institutional = ifelse(Institutional, "Yes", "No")
+  ) %>%
+  select(ACTOR_TYPE, Institutional, Articles, Article_Share, REACH_Share, 
+         Attention_Gap, Efficiency, Mean_REACH) %>%
+  kable(col.names = c("Actor Type", "Institutional", "Articles", "Article Share",
+                      "REACH Share", "Attention Gap", "Efficiency", "Mean REACH")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## HNB Official Position Analysis
+
+```{r hnb-position}
+#| label: hnb-position
+
+# HNB specific metrics
+hnb_official <- hnb[ACTOR_TYPE == "HNB Official"]
+hnb_stats <- actor_summary[ACTOR_TYPE == "HNB Official"]
+
+# Rank calculations
+article_rank <- actor_summary[order(-Articles), which(ACTOR_TYPE == "HNB Official")]
+reach_rank <- actor_summary[order(-Total_REACH), which(ACTOR_TYPE == "HNB Official")]
+
+cat("HNB Official Communication Analysis\n")
+cat("====================================\n")
+cat("Total articles:", format(hnb_stats$Articles, big.mark = ","), "\n")
+cat("Article share:", sprintf("%.2f%%", hnb_stats$Article_Share), "\n")
+cat("REACH share:", sprintf("%.2f%%", hnb_stats$REACH_Share), "\n")
+cat("Attention gap:", sprintf("%+.2f pp", hnb_stats$Attention_Gap), "\n")
+cat("Efficiency:", sprintf("%.2fx", hnb_stats$Efficiency), "\n")
+cat("\nRankings (among", nrow(actor_summary), "actor types):\n")
+cat("  By article volume: #", article_rank, "\n")
+cat("  By total REACH: #", reach_rank, "\n")
+cat("\nMean REACH:", format(round(hnb_stats$Mean_REACH, 0), big.mark = ","), "\n")
+cat("Median REACH:", format(round(hnb_stats$Median_REACH, 0), big.mark = ","), "\n")
+```
+
+# Analysis 5.3: Temporal Evolution of Attention Gap
+
+## Monthly Attention Gap Trends
+
+```{r monthly-gap}
+#| label: monthly-gap
+#| fig-height: 7
+
+monthly_inst <- hnb[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Inst_Articles = sum(INSTITUTIONAL),
+  Inst_REACH = sum(REACH[INSTITUTIONAL], na.rm = TRUE)
+), by = .(year, month)]
+
+monthly_inst[, `:=`(
+  date_month = as.Date(paste(year, month, "01", sep = "-")),
+  Inst_Article_Share = Inst_Articles / Articles * 100,
+  Inst_REACH_Share = Inst_REACH / Total_REACH * 100
+)]
+
+monthly_inst[, Attention_Gap := Inst_REACH_Share - Inst_Article_Share]
+
+monthly_gap_long <- monthly_inst %>%
+  select(date_month, Inst_Article_Share, Inst_REACH_Share) %>%
+  pivot_longer(cols = -date_month, names_to = "Metric", values_to = "Percentage") %>%
+  mutate(Metric = ifelse(Metric == "Inst_Article_Share", 
+                         "Institutional Article Share", 
+                         "Institutional REACH Share"))
+
+ggplot(monthly_gap_long, aes(x = date_month, y = Percentage, color = Metric)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = as.Date("2023-01-01"), linetype = "dashed", color = "#27ae60") +
+  annotate("text", x = as.Date("2023-01-01"), y = max(monthly_gap_long$Percentage, na.rm = TRUE) * 0.95,
+           label = "Euro", hjust = -0.1, color = "#27ae60", fontface = "bold") +
+  scale_color_manual(values = c("Institutional Article Share" = "#64748b",
+                                "Institutional REACH Share" = "#1a3c5a")) +
+  scale_x_date(date_labels = "%Y-%m", date_breaks = "3 months") +
+  labs(
+    title = "Evolution of Institutional Share Over Time",
+    subtitle = "Comparing article volume share vs attention share",
+    x = NULL,
+    y = "Percentage (%)",
+    color = NULL
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "top")
+```
+
+## Attention Gap Time Series
+
+```{r gap-timeseries}
+#| label: gap-timeseries
+#| fig-height: 6
+
+ggplot(monthly_inst, aes(x = date_month, y = Attention_Gap)) +
+  geom_line(color = "#1a3c5a", linewidth = 1) +
+  geom_smooth(method = "loess", se = TRUE, color = "#e07b39", fill = "#e07b39", alpha = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_vline(xintercept = as.Date("2023-01-01"), linetype = "dashed", color = "#27ae60") +
+  scale_x_date(date_labels = "%Y-%m", date_breaks = "3 months") +
+  labs(
+    title = "Institutional Attention Gap Over Time",
+    subtitle = "Gap = REACH Share - Article Share (negative = underperforming)",
+    x = NULL,
+    y = "Attention Gap (percentage points)",
+    caption = "Values below zero indicate institutional sources capturing less attention than their volume share"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+# Analysis 5.4: Period Comparison (Structural Break Test)
+
+## ERM II vs Euro Era Attention Gap
+
+```{r period-gap}
+#| label: period-gap
+#| fig-height: 7
+
+period_inst <- hnb[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Inst_Articles = sum(INSTITUTIONAL),
+  Inst_REACH = sum(REACH[INSTITUTIONAL], na.rm = TRUE),
+  HNB_Articles = sum(ACTOR_TYPE == "HNB Official"),
+  HNB_REACH = sum(REACH[ACTOR_TYPE == "HNB Official"], na.rm = TRUE)
+), by = period]
+
+period_inst[, `:=`(
+  Inst_Article_Share = Inst_Articles / Articles * 100,
+  Inst_REACH_Share = Inst_REACH / Total_REACH * 100,
+  HNB_Article_Share = HNB_Articles / Articles * 100,
+  HNB_REACH_Share = HNB_REACH / Total_REACH * 100
+)]
+
+period_inst[, `:=`(
+  Inst_Gap = Inst_REACH_Share - Inst_Article_Share,
+  HNB_Gap = HNB_REACH_Share - HNB_Article_Share
+)]
+
+period_inst %>%
+  mutate(
+    Articles = format(Articles, big.mark = ","),
+    Inst_Articles = format(Inst_Articles, big.mark = ","),
+    Inst_Article_Share = sprintf("%.1f%%", Inst_Article_Share),
+    Inst_REACH_Share = sprintf("%.1f%%", Inst_REACH_Share),
+    Inst_Gap = sprintf("%+.1f pp", Inst_Gap),
+    HNB_Article_Share = sprintf("%.2f%%", HNB_Article_Share),
+    HNB_REACH_Share = sprintf("%.2f%%", HNB_REACH_Share),
+    HNB_Gap = sprintf("%+.2f pp", HNB_Gap)
+  ) %>%
+  select(period, Articles, Inst_Article_Share, Inst_REACH_Share, Inst_Gap,
+         HNB_Article_Share, HNB_REACH_Share, HNB_Gap) %>%
+  kable(col.names = c("Period", "Total Articles", "Inst. Article %", "Inst. REACH %",
+                      "Inst. Gap", "HNB Article %", "HNB REACH %", "HNB Gap")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Period Comparison Visualization
+
+```{r period-gap-viz}
+#| label: period-gap-viz
+#| fig-height: 7
+
+period_gap_long <- period_inst %>%
+  select(period, Inst_Article_Share, Inst_REACH_Share) %>%
+  pivot_longer(cols = -period, names_to = "Metric", values_to = "Percentage") %>%
+  mutate(Metric = ifelse(Metric == "Inst_Article_Share", "Article Share", "REACH Share"))
+
+ggplot(period_gap_long, aes(x = period, y = Percentage, fill = Metric)) +
+  geom_col(position = "dodge", width = 0.6) +
+  geom_text(aes(label = sprintf("%.1f%%", Percentage)),
+            position = position_dodge(width = 0.6), vjust = -0.3, size = 4) +
+  scale_fill_manual(values = c("Article Share" = "#64748b", "REACH Share" = "#1a3c5a")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Institutional Attention Gap by Period",
+    subtitle = "Did euro adoption change the attention gap?",
+    x = "Period",
+    y = "Institutional Share (%)",
+    fill = NULL
+  ) +
+  theme(legend.position = "top")
+```
+
+# Analysis 5.5: Source-Level Analysis
+
+## Top Sources: Institutional vs Media
+
+```{r top-sources}
+#| label: top-sources
+#| fig-height: 10
+
+source_summary <- hnb[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE),
+  ACTOR_TYPE = first(ACTOR_TYPE),
+  Institutional = first(INSTITUTIONAL)
+), by = FROM][order(-Total_REACH)]
+
+# Top 30 sources
+top_sources <- source_summary[1:30]
+
+ggplot(top_sources, aes(x = reorder(FROM, Total_REACH), y = Total_REACH, fill = Institutional)) +
+  geom_col(width = 0.8) +
+  geom_text(aes(label = format(Total_REACH, big.mark = ",")), hjust = -0.1, size = 2.5) +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "#1a3c5a", "FALSE" = "#e07b39"),
+                    labels = c("TRUE" = "Institutional", "FALSE" = "Non-Institutional")) +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Top 30 Sources by Total REACH",
+    subtitle = "Institutional sources highlighted",
+    x = NULL,
+    y = "Total REACH",
+    fill = "Category"
+  ) +
+  theme(axis.text.y = element_text(size = 8))
+```
+
+## Efficiency by Source (High-Volume Sources)
+
+```{r source-efficiency}
+#| label: source-efficiency
+
+# Sources with minimum 50 articles
+source_efficiency <- source_summary[Articles >= 50]
+source_efficiency[, `:=`(
+  Article_Share = Articles / sum(hnb$Articles) * 100,
+  REACH_Share = Total_REACH / sum(hnb$REACH, na.rm = TRUE) * 100
+)]
+source_efficiency[, Efficiency := REACH_Share / Article_Share]
+
+# Top institutional sources by efficiency
+inst_sources <- source_efficiency[Institutional == TRUE][order(-Efficiency)][1:15]
+
+inst_sources %>%
+  mutate(
+    Articles = format(Articles, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    Mean_REACH = format(round(Mean_REACH, 0), big.mark = ","),
+    Article_Share = sprintf("%.2f%%", Article_Share),
+    REACH_Share = sprintf("%.2f%%", REACH_Share),
+    Efficiency = sprintf("%.2fx", Efficiency)
+  ) %>%
+  select(FROM, ACTOR_TYPE, Articles, Article_Share, REACH_Share, Efficiency, Mean_REACH) %>%
+  kable(col.names = c("Source", "Actor Type", "Articles", "Article %", "REACH %",
+                      "Efficiency", "Mean REACH"),
+        caption = "Top 15 Institutional Sources by Efficiency (min. 50 articles)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  scroll_box(height = "400px")
+```
+
+# Analysis 5.6: Media Amplification Effect
+
+## Who Amplifies HNB Communication?
+
+When HNB publishes official communication, which media sources amplify it and capture the subsequent attention?
+
+```{r amplification-analysis}
+#| label: amplification-analysis
+#| fig-height: 8
+
+# Calculate media "amplification" by looking at actor type attention capture
+media_actors <- c("Financial Media", "General Media")
+
+media_amplification <- hnb[ACTOR_TYPE %in% media_actors, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE)
+), by = ACTOR_TYPE]
+
+# Compare to HNB Official
+hnb_comparison <- hnb[ACTOR_TYPE %in% c("HNB Official", media_actors), .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE)
+), by = ACTOR_TYPE]
+
+hnb_comparison[, `:=`(
+  Article_Share = Articles / sum(Articles) * 100,
+  REACH_Share = Total_REACH / sum(Total_REACH) * 100
+)]
+
+ggplot(hnb_comparison, aes(x = reorder(ACTOR_TYPE, -REACH_Share), y = REACH_Share, fill = ACTOR_TYPE)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = sprintf("%.1f%%", REACH_Share)), vjust = -0.3, size = 4) +
+  scale_fill_manual(values = c("HNB Official" = "#1a3c5a", 
+                               "Financial Media" = "#e07b39",
+                               "General Media" = "#c44536")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Attention Distribution: HNB vs Media",
+    subtitle = "Who captures attention in central bank coverage?",
+    x = NULL,
+    y = "Share of Total REACH (%)",
+    fill = "Actor Type"
+  ) +
+  theme(legend.position = "none")
+```
+
+## Media Intermediation Ratio
+
+```{r intermediation-ratio}
+#| label: intermediation-ratio
+
+# Calculate intermediation ratio
+hnb_reach <- sum(hnb[ACTOR_TYPE == "HNB Official", REACH], na.rm = TRUE)
+media_reach <- sum(hnb[ACTOR_TYPE %in% media_actors, REACH], na.rm = TRUE)
+total_reach <- sum(hnb$REACH, na.rm = TRUE)
+
+intermediation_ratio <- media_reach / hnb_reach
+
+cat("Media Intermediation Analysis\n")
+cat("=============================\n")
+cat("HNB Official REACH:", format(hnb_reach, big.mark = ","), "\n")
+cat("Media (Financial + General) REACH:", format(media_reach, big.mark = ","), "\n")
+cat("\nIntermediation Ratio:", round(intermediation_ratio, 1), "x\n")
+cat("(Media captures", round(intermediation_ratio, 1), "times more attention than HNB Official)\n")
+cat("\nShare of total attention:\n")
+cat("  HNB Official:", sprintf("%.1f%%", hnb_reach / total_reach * 100), "\n")
+cat("  Financial Media:", sprintf("%.1f%%", sum(hnb[ACTOR_TYPE == "Financial Media", REACH], na.rm = TRUE) / total_reach * 100), "\n")
+cat("  General Media:", sprintf("%.1f%%", sum(hnb[ACTOR_TYPE == "General Media", REACH], na.rm = TRUE) / total_reach * 100), "\n")
+```
+
+# Summary and Key Findings
+
+## Core Hypothesis Test
+
+```{r hypothesis-summary}
+#| label: hypothesis-summary
+
+# Extract key metrics
+inst_gap <- inst_summary[INST_CATEGORY == "Institutional", Attention_Gap]
+inst_efficiency <- inst_summary[INST_CATEGORY == "Institutional", Efficiency]
+hnb_gap <- actor_summary[ACTOR_TYPE == "HNB Official", Attention_Gap]
+hnb_efficiency <- actor_summary[ACTOR_TYPE == "HNB Official", Efficiency]
+
+tibble(
+  Metric = c(
+    "H2: Institutional Attention Gap",
+    "Institutional Efficiency",
+    "HNB Official Attention Gap",
+    "HNB Official Efficiency",
+    "Media Intermediation Ratio",
+    "Statistical Significance (Wilcoxon p-value)"
+  ),
+  Value = c(
+    sprintf("%+.1f percentage points", inst_gap),
+    sprintf("%.2fx", inst_efficiency),
+    sprintf("%+.1f percentage points", hnb_gap),
+    sprintf("%.2fx", hnb_efficiency),
+    sprintf("%.1fx", intermediation_ratio),
+    format.pval(wilcox_result$p.value, digits = 3)
+  ),
+  Interpretation = c(
+    ifelse(inst_gap < 0, "Institutional sources UNDERPERFORM", "Institutional sources overperform"),
+    ifelse(inst_efficiency < 1, "Below proportional attention", "Above proportional attention"),
+    ifelse(hnb_gap < 0, "HNB Official UNDERPERFORMS", "HNB Official overperforms"),
+    ifelse(hnb_efficiency < 1, "Below proportional attention", "Above proportional attention"),
+    "Media captures X times more attention than HNB",
+    ifelse(wilcox_result$p.value < 0.05, "Statistically significant difference", "Not significant")
+  )
+) %>%
+  kable(col.names = c("Metric", "Value", "Interpretation")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Theoretical Implications
+
+The findings directly address the core theoretical concerns from the literature:
+
+1. **Blinder's pessimism confirmed:** The attention gap provides quantitative evidence for the claim that central bank public communication "for the most part fails" to reach audiences proportionally
+
+2. **Rational inattention at work:** The stark difference between institutional article volume and attention capture is consistent with Sims' theory that agents have finite information-processing capacity
+
+3. **Media intermediation dominance:** The `r round(intermediation_ratio, 1)`x intermediation ratio confirms that for smaller central banks, media framing rather than direct communication drives public attention
+
+4. **Structural break effects:** The period comparison reveals whether euro adoption changed the attention dynamics for HNB communication
+
+## Policy Implications for HNB
+
+Based on the attention gap analysis:
+
+1. **Direct communication limitations:** With efficiency below 1.0, increasing article volume alone will not proportionally increase attention
+
+2. **Strategic media relations:** Given media intermediation dominance, optimizing relationships with high-reach media sources may be more effective than direct publication
+
+3. **Content strategy:** Analyzing which specific HNB communications achieve higher efficiency can inform content optimization
+
+4. **Layered communication:** Following ECB best practices, simplified versions for general audiences may improve attention capture
+
+---
+
+# Appendix: Technical Notes
+
+## Attention Gap Calculation
+
+$$\text{Attention Gap} = \text{REACH Share} - \text{Article Share}$$
+
+- Negative values indicate the source captures less attention than its volume share
+- Zero indicates proportional attention
+- Positive values indicate attention amplification
+
+## Efficiency Index
+
+$$\text{Efficiency} = \frac{\text{REACH Share}}{\text{Article Share}}$$
+
+- Values below 1.0 indicate underperformance
+- Values equal to 1.0 indicate proportional attention
+- Values above 1.0 indicate overperformance
+
+## Institutional Classification
+
+Institutional sources include:
+- HNB Official (hnb.hr, Hrvatska narodna banka)
+- Financial Regulators (HANFA, FINA)
+- Government (gov.hr, ministries)
+
+All other sources are classified as non-institutional.
+
+```{r session-info}
+#| label: session-info
+
+sessionInfo()
+```

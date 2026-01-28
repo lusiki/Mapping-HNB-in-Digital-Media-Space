@@ -40,6 +40,7 @@ Interactive HTML visualizations of the HNB digital media landscape:
 | **Map 2** | Thematic Structure | [View Map](outputs/maps/map2_thematic_structure.html) |
 | **Map 3** | Sentiment Structure | [View Map](outputs/maps/map3_sentiment_structure.html) |
 | **Map 4** | Temporal Dynamics | [View Map](outputs/maps/map4_temporal_dynamics.html) |
+| **Map 5** | Institutional Attention Gap | [View Map](outputs/maps/map5_institutional_attention_gap.html) |
 
 > **Note:** Download the repository and open HTML files locally, or view via GitHub Pages when enabled.
 

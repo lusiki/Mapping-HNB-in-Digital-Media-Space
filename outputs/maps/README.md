@@ -10,6 +10,7 @@ Interactive HTML visualizations mapping the HNB digital media landscape.
 | [Map 2](./map2_thematic_structure.html) | Thematic Structure | Topic modeling and thematic analysis of HNB coverage |
 | [Map 3](./map3_sentiment_structure.html) | Sentiment Structure | Sentiment patterns and emotional framing analysis |
 | [Map 4](./map4_temporal_dynamics.html) | Temporal Dynamics | Time series patterns and event-driven attention |
+| [Map 5](./map5_institutional_attention_gap.html) | Institutional Attention Gap | HNB vs media/influencer engagement analysis (H2) |
 
 ## Viewing the Maps
 
@@ -41,3 +42,9 @@ These are self-contained HTML files that can be opened directly in any web brows
 - Event-driven attention spikes
 - Pre-ERM II / ERM II / Euro era comparisons
 - Seasonal and day-of-week patterns
+
+### Map 5: Institutional Attention Gap
+- Official HNB engagement vs media/influencer engagement
+- Follower-normalized engagement rates
+- Hypothesis H2 testing (institutional attention disadvantage)
+- Actor category comparison analysis

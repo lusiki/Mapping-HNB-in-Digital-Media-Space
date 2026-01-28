@@ -13,6 +13,7 @@ Interactive HTML visualizations of the HNB digital media landscape.
 | [Map 2](maps/map2_thematic_structure.html) | Thematic Structure | Topic modeling and thematic analysis |
 | [Map 3](maps/map3_sentiment_structure.html) | Sentiment Structure | Sentiment patterns and emotional framing |
 | [Map 4](maps/map4_temporal_dynamics.html) | Temporal Dynamics | Time series and event-driven attention |
+| [Map 5](maps/map5_institutional_attention_gap.html) | Institutional Attention Gap | HNB vs media/influencer engagement (H2) |
 
 ### `figures/`
 Exploratory and working figures.
