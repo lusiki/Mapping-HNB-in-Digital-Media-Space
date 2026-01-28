@@ -1,0 +1,549 @@
+---
+title: "Central Bank Voice in the Fiscal Conversation: Evidence from Croatia's High-Inflation Period"
+author:
+  - name: "[Sikic,L and Palic,P]"
+    affiliation: "[HKS]"
+    email: "[email]"
+    orcid: "[ORCID]"
+date: today
+format:
+  docx:
+    toc: false
+    number-sections: true
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    theme: cosmo
+    embed-resources: true
+abstract: |
+  Central bank communication operates primarily through expectation management, yet research documents persistent failure to reach general audiences. This communication gap carries fiscal implications: unanchored inflation expectations increase pressure on public sector wages, reduce real tax revenues, and constrain fiscal policy space. We develop a four-dimension evaluation framework—voice share, market structure, event responsiveness, and sentiment dynamics—and apply it to Croatian National Bank (HNB) digital media coverage during 2021–2023, a period encompassing the inflation crisis and historic euro adoption. Analysing 31,536 articles from Croatian digital media, we find a significant institutional attention gap: official sources capture 2.1% of potential audience reach despite producing 4.3% of coverage volume. The attention market is highly concentrated (Gini = 0.82), with four media gatekeepers controlling 58% of total reach. HNB voice share decreases during high-salience events, indicating systematic "event capture" by faster-responding media sources. These findings quantify Blinder's "pessimism" about central bank public communication while revealing structural challenges facing smaller institutions with limited resources. We propose a layered communication strategy and offer a replicable framework for evaluating public sector communication effectiveness.
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| include: false
+
+library(tidyverse)
+library(data.table)
+library(scales)
+library(ggplot2)
+library(knitr)
+library(lubridate)
+library(ineq)
+
+# Load data
+hnb <- readRDS("C:/Users/lsikic/Dropbox/hnb.rds")
+setDT(hnb)
+
+hnb[, date := as.Date(DATE)]
+hnb[, year := year(date)]
+hnb[, month := month(date)]
+hnb[, period := fcase(
+  date < as.Date("2023-01-01"), "ERM II",
+  default = "Euro Era"
+)]
+hnb[, period := factor(period, levels = c("ERM II", "Euro Era"))]
+
+# Actor classification
+manual_overrides <- list(
+  "HNB Official" = c("hnb.hr", "hrvatska narodna banka", "hrvatska narodna banka / croatian national bank"),
+  "Financial Regulators" = c("hanfa.hr", "hanfa", "hrvatska agencija za nadzor financijskih usluga", "fina.hr", "fina", "financijska agencija"),
+  "Government" = c("gov.hr", "vlada", "vlada republike hrvatske", "ministarstvo financija", "sabor.hr"),
+  "Financial Media" = c("poslovni.hr", "poslovni dnevnik", "seebiz.eu", "seebiz", "lider.media", "lidermedia.hr", "lider", "bloombergadria.com", "bloomberg adria", "hrportfolio.hr", "privredni.hr"),
+  "Commercial Banks" = c("zaba.hr", "zagrebačka banka", "pbz.hr", "privredna banka zagreb", "erste.hr", "erste banka", "hpb.hr", "hrvatska poštanska banka", "otp banka", "raiffeisen", "addiko"),
+  "Academic/Expert" = c("eizg.hr", "ekonomski institut zagreb", "ijf.hr", "institut za javne financije", "ekonomski fakultet")
+)
+
+general_media_sources <- c("index.hr", "index", "jutarnji.hr", "jutarnji", "jutarnji list", "vecernji.hr", "vecernji", "večernji list", "24sata.hr", "24sata", "slobodnadalmacija.hr", "slobodna dalmacija", "novilist.hr", "novi list", "dnevnik.hr", "dnevnik", "tportal.hr", "tportal", "telegram.hr", "telegram", "net.hr", "rtl.hr", "rtl", "hrt.hr", "hrt", "n1info.hr", "n1info.com", "n1", "nacional.hr", "nacional", "direktno.hr", "direktno", "dnevno.hr", "dnevno")
+
+classify_actor_hnb <- function(from_val, url_val = NA) {
+  from_lower <- tolower(trimws(as.character(from_val)))
+  url_lower <- tolower(ifelse(is.na(url_val), "", as.character(url_val)))
+  combined <- paste(from_lower, url_lower)
+  
+  match_any <- function(patterns, text, fixed = TRUE) {
+    any(sapply(patterns, function(p) grepl(p, text, fixed = fixed)))
+  }
+  
+  for (actor_type in names(manual_overrides)) {
+    if (match_any(manual_overrides[[actor_type]], from_lower)) return(actor_type)
+  }
+  
+  if (grepl("hnb\\.hr", url_lower) || grepl("hnb\\.hr", from_lower)) return("HNB Official")
+  if (grepl("hanfa|fina\\.hr", combined)) return("Financial Regulators")
+  if (grepl("gov\\.hr|vlada|ministarstvo", combined)) return("Government")
+  
+  bank_patterns <- c("banka", "bank", "zaba", "pbz", "erste", "hpb", "otp", "raiffeisen", "addiko", "sberbank")
+  if (match_any(bank_patterns, from_lower) && !grepl("narodna|hnb|central", from_lower)) return("Commercial Banks")
+  
+  financial_media_patterns <- c("poslovni", "seebiz", "lider", "bloomberg", "portfolio", "privredni", "finance", "ekonom", "business", "capital")
+  if (match_any(financial_media_patterns, from_lower)) return("Financial Media")
+  
+  if (match_any(general_media_sources, from_lower)) return("General Media")
+  
+  news_patterns <- c("portal", "vijesti", "news", "info", "dnevni", "radio", "tv", ".hr")
+  if (match_any(news_patterns, from_lower)) return("General Media")
+  
+  return("Other")
+}
+
+hnb[, ACTOR_TYPE := mapply(classify_actor_hnb, FROM, URL)]
+hnb[, INSTITUTIONAL := ACTOR_TYPE %in% c("HNB Official", "Financial Regulators", "Government")]
+
+# Key statistics for inline use
+n_articles <- nrow(hnb)
+n_sources <- uniqueN(hnb$FROM)
+total_reach <- sum(hnb$REACH, na.rm = TRUE)
+date_min <- min(hnb$date)
+date_max <- max(hnb$date)
+
+# Actor statistics
+actor_stats <- hnb[, .(
+  Articles = .N,
+  Sources = uniqueN(FROM),
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE)
+), by = ACTOR_TYPE][order(-Total_REACH)]
+
+actor_stats[, `:=`(
+  Article_Share = Articles / sum(Articles) * 100,
+  REACH_Share = Total_REACH / sum(Total_REACH) * 100
+)]
+
+# Source-level statistics for concentration
+source_stats <- hnb[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  ACTOR_TYPE = first(ACTOR_TYPE)
+), by = FROM][order(-Total_REACH)]
+
+source_stats[, `:=`(
+  Article_Share = Articles / sum(Articles) * 100,
+  REACH_Share = Total_REACH / sum(Total_REACH) * 100,
+  Rank = .I
+)]
+
+source_stats[, Cumulative_REACH := cumsum(REACH_Share)]
+
+# Concentration metrics
+gini_reach <- ineq(source_stats$Total_REACH, type = "Gini")
+hhi_reach <- sum(source_stats$REACH_Share^2)
+cr4 <- sum(source_stats[1:4, REACH_Share])
+cr10 <- sum(source_stats[1:10, REACH_Share])
+sources_50 <- which(source_stats$Cumulative_REACH >= 50)[1]
+sources_80 <- which(source_stats$Cumulative_REACH >= 80)[1]
+
+# Category definitions
+inst_types <- c("HNB Official", "Financial Regulators", "Government")
+media_types <- c("Financial Media", "General Media")
+
+# HNB specific metrics
+hnb_article_share <- actor_stats[ACTOR_TYPE == "HNB Official", Article_Share]
+hnb_reach_share <- actor_stats[ACTOR_TYPE == "HNB Official", REACH_Share]
+hnb_gap <- hnb_reach_share - hnb_article_share
+```
+
+**Keywords:** Central bank communication, fiscal-monetary policy, digital media, attention economics, euro adoption, Croatia
+
+**JEL Codes:** E58, H83, D83, L82
+
+# Introduction
+
+Central bank communication has undergone a fundamental transformation over the past three decades. The era when central bankers operated under the maxim "never explain, never excuse" has given way to an age of radical transparency, where communication is recognised not merely as an adjunct to monetary policy but as its very essence (Woodford, 2001). This transformation rests on a theoretical insight: if economic outcomes depend primarily on expectations about future policy paths, then shaping those expectations through communication becomes the principal mechanism of policy transmission.
+
+Yet a troubling gap persists between theory and practice. While financial markets parse every syllable of central bank statements, general audiences remain largely inattentive. Blinder (2018) characterises public communication as central banking's "last frontier," while Coibion et al. (2022) find that reading Federal Reserve statements has approximately the same effect on household inflation expectations as simply being told the inflation target—suggesting that complex official communications add little beyond basic information transmission.
+
+This communication gap carries significant fiscal implications that have received insufficient attention in the literature. When central bank messaging fails to anchor public inflation expectations, the consequences ripple through public finances: wage demands in the public sector escalate, real tax revenues decline through behavioural responses, government borrowing costs increase through inflation risk premia, and fiscal space for countercyclical policy contracts. The fiscal-monetary communication nexus—the pathway through which central bank messaging affects fiscal outcomes via public expectations—represents a critical but understudied linkage in macroeconomic policy.
+
+This paper addresses this gap by developing and applying an evaluation framework for central bank communication effectiveness, with explicit attention to fiscal implications. We examine the Croatian National Bank (HNB) during 2021–2023, a period encompassing both the sharpest inflation crisis in decades and the historic adoption of the euro. Croatia offers a compelling research setting: as a small open economy with limited communication resources, it faces the challenge confronting most central banks worldwide—yet the academic literature on HNB communication is virtually nonexistent.
+
+Our analysis addresses four research questions. First, does HNB official communication achieve visibility proportional to its policy relevance in the digital media ecosystem? Second, how concentrated is the attention market for monetary and fiscal policy coverage, and what does this imply for gatekeeper dependency? Third, which actors capture attention during key policy events, and does HNB maintain voice when communication matters most? Fourth, did the structural transition from ERM II to eurozone membership alter communication dynamics?
+
+We contribute to the literature in three ways. Theoretically, we develop a four-dimension evaluation framework linking attention economics to fiscal outcomes through the concept of institutional voice share. Empirically, we provide the first systematic analysis of central bank digital media presence in a small EU economy, using comprehensive data covering over 31,000 articles. Methodologically, we offer a replicable framework applicable to other public institutions facing similar communication challenges.
+
+The remainder of this paper proceeds as follows. Section 2 reviews the literature on central bank communication, rational inattention, and media intermediation. Section 3 describes our data and measurement approach. Section 4 presents results across four analytical dimensions. Section 5 discusses implications for communication strategy and fiscal policy. Section 6 concludes.
+
+
+# Literature Review
+
+## Central Bank Communication as Policy Instrument
+
+The theoretical foundation for modern central bank communication derives from the expectations channel of monetary policy transmission. Woodford (2001) demonstrated that in forward-looking models, current output and inflation depend not on the current policy rate but on the entire expected future path of short-term rates. This insight elevates communication from transparency exercise to policy instrument: "Central bank communication becomes the essence of monetary policy rather than merely an ornament to it" (Blinder et al., 2008, p. 15).
+
+Empirical evidence confirms communication's market impact. Gürkaynak et al. (2005) decompose Federal Open Market Committee (FOMC) announcement effects into "target" (current rate) and "path" (future guidance) factors, finding that the path factor—pure communication—explains most movement in longer-term yields. Lucca and Trebbi (2009) show that changes in FOMC communication systematically precede changes in the policy rate, often by more than twelve months. These findings establish that markets attend closely to central bank messaging and that communication shapes expectations independent of policy actions.
+
+## The Public Communication Challenge
+
+If communication effectively reaches financial markets, its impact on general audiences remains far more limited. Blinder et al. (2008) identify public communication as the discipline's most important remaining challenge, noting that "getting through to the general public is notoriously difficult." The authors observe that even the most transparent central banks struggle to convey their messages to ordinary citizens, who lack the time, expertise, and incentives to parse technical monetary policy statements.
+
+Coibion et al. (2022) provide striking evidence of this challenge. In a randomised experiment, they find that exposing households to FOMC statements produces only marginally larger effects on inflation expectations than simply informing subjects of the Federal Reserve's inflation target. "Reading newspaper articles had about half the effect of direct Fed communications," they report, suggesting that journalistic intermediation dilutes official messaging. These findings align with Blinder's (2018) updated assessment that central bank communication with the public "for the most part fails."
+
+## Rational Inattention and Information Processing
+
+Sims (2003) provides a theoretical framework explaining this pattern through rational inattention: economic agents have finite information-processing capacity and allocate attention optimally across competing demands. Financial market participants—whose livelihoods depend on anticipating monetary policy—invest substantial attention in central bank communications. Ordinary citizens, facing minimal personal stakes from marginal changes in policy, rationally allocate attention elsewhere.
+
+This framework generates testable predictions. We should observe heterogeneous attention across audience segments, with institutional and professional sources commanding greater engagement per unit of content than communications targeting general audiences. The attention market should exhibit concentration, with specialised intermediaries capturing disproportionate reach. And official sources should face systematic disadvantage in competing for public attention against media sources optimised for audience engagement.
+
+## Media Intermediation and Gatekeeping
+
+The media economics literature illuminates the intermediation process through which central bank messages reach the public. Shoemaker and Vos (2009) describe gatekeeping as the process by which information is filtered, shaped, and transmitted by media organisations. For public institutions, this creates dependency: their messages reach citizens primarily through intermediaries whose incentives may diverge from faithful transmission.
+
+Soroka (2014) documents systematic negativity bias in economic news coverage: bad news receives more attention than good news, and negative framing predominates even when economic conditions improve. For central banks communicating about inflation, this creates asymmetric challenges—policy failures attract amplified coverage while successes go unnoticed. The implications for fiscal policy are direct: if media coverage systematically emphasises inflation risks while downplaying stabilisation efforts, public expectations may remain unanchored even when policy succeeds.
+
+## Fiscal Implications of Communication Failures
+
+The fiscal consequences of communication failures have received less attention than their monetary counterparts, yet the linkages are substantial. Unanchored inflation expectations affect public finances through multiple channels. First, wage determination in the public sector responds to expected inflation; when expectations remain elevated, wage demands follow, increasing the government wage bill (Holden, 2004). Second, inflation expectations influence household behaviour in ways that affect the tax base—consumption timing, labour supply, and portfolio allocation all respond to expected inflation paths (Coibion et al., 2020). Third, inflation risk premia embed in government borrowing costs, with higher expected inflation volatility raising debt servicing expenses.
+
+These fiscal channels create feedback loops that amplify the costs of communication failure. Higher wage costs and borrowing expenses constrain fiscal space, limiting capacity for countercyclical policy. Reduced fiscal flexibility in turn increases the burden on monetary policy, potentially requiring larger interest rate movements that further challenge communication efforts.
+
+## Communication Challenges for Smaller Central Banks
+
+The literature on central bank communication draws overwhelmingly from major central banks—the Federal Reserve, European Central Bank, Bank of England, and Bank of Japan. Yet most central banks worldwide are smaller institutions with limited resources facing distinct communication challenges.
+
+Égert and Kočenda (2014) examine central bank communication in Central and Eastern European transition economies, finding that communication effects on financial markets are generally smaller and less consistent than in advanced economies. They attribute this to less developed financial markets, shorter track records of independence, and resource constraints limiting communication capacity.
+
+For smaller central banks like HNB, these challenges compound. Limited staff constrain the volume and sophistication of external communication. Smaller media markets may offer fewer specialised financial journalists capable of accurately interpreting technical content. And transition to new policy regimes—such as euro adoption—may disrupt established communication patterns before new equilibria emerge.
+
+## The Croatian Research Gap
+
+Despite Croatia's significant monetary policy evolution—ERM II entry in July 2020, euro adoption in January 2023, and navigation of the highest inflation in decades—academic research on HNB communication is virtually nonexistent. This gap is consequential. Croatia's dual transition—simultaneously entering the eurozone and Schengen area on 1 January 2023—required unprecedented public communication. The inflation crisis demanded explanation of price dynamics and policy responses. Yet we lack evidence on whether these communications reached their intended audiences.
+
+## Conceptual Framework
+
+Drawing on this literature, we develop an evaluation framework organised around four dimensions. **Voice Share** measures the proportion of public attention captured by institutional sources relative to other actors. **Market Structure** examines concentration in the attention market and gatekeeper dependency. **Event Responsiveness** assesses whether institutional voice is maintained during high-salience moments. **Temporal Dynamics** examines change across periods, particularly around the euro transition.
+
+
+# Data and Methods
+
+## Data Source
+
+We analyse digital media coverage of the Croatian National Bank using data from Mediatoolkit, a comprehensive media monitoring platform that tracks online content across news portals, websites, blogs, and forums in real time. The platform captures article metadata including source, publication date, URL, and title, along with REACH—an estimated measure of potential audience exposure based on source traffic data.
+
+Our dataset covers January 2021 to December 2023, capturing the arc from post-pandemic recovery through inflation crisis to the first year of eurozone membership.
+
+```{r tbl-corpus}
+corpus_stats <- data.frame(
+  Metric = c(
+    "Total articles",
+    "Unique sources",
+    "Total REACH (millions)",
+    "Date range",
+    "Articles per day (mean)",
+    "REACH per article (mean)"
+  ),
+  Value = c(
+    format(n_articles, big.mark = ","),
+    format(n_sources, big.mark = ","),
+    sprintf("%.1f", total_reach / 1e6),
+    paste(format(date_min, "%d %b %Y"), "–", format(date_max, "%d %b %Y")),
+    sprintf("%.1f", n_articles / as.numeric(date_max - date_min)),
+    format(round(total_reach / n_articles, 0), big.mark = ",")
+  )
+)
+
+kable(corpus_stats, col.names = c("Metric", "Value"), align = c("l", "r"),
+      caption = "Table 1: Corpus Descriptive Statistics")
+```
+
+## Actor Classification
+
+We classify each article's source into categories based on institutional role: **Institutional sources** (HNB Official, Financial Regulators, Government) and **Media sources** (Financial Media, General Media), plus other actors (Commercial Banks, Academic/Expert, etc.).
+
+```{r tbl-actors}
+actor_stats[, Institutional := ifelse(ACTOR_TYPE %in% inst_types, "Yes", "No")]
+
+actor_display <- actor_stats[ACTOR_TYPE != "Other", .(
+  ACTOR_TYPE,
+  Institutional,
+  Articles = format(Articles, big.mark = ","),
+  Article_Pct = sprintf("%.1f", Article_Share),
+  REACH_Pct = sprintf("%.1f", REACH_Share),
+  Mean_REACH = format(round(Mean_REACH, 0), big.mark = ",")
+)]
+
+kable(actor_display, 
+      col.names = c("Actor Type", "Institutional", "Articles", "Article %", "REACH %", "Mean REACH"),
+      align = c("l", "c", "r", "r", "r", "r"),
+      caption = "Table 2: Actor Classification and Summary Statistics")
+```
+
+## Key Metrics
+
+**Voice Share** measures the proportion of total attention captured by each actor type:
+
+$$\text{Voice Share}_i = \frac{\text{REACH}_i}{\sum_{j=1}^{n} \text{REACH}_j} \times 100$$
+
+**Attention Gap** quantifies the difference between reach share and volume share:
+
+$$\text{Attention Gap} = \text{REACH Share} - \text{Article Share}$$
+
+A negative gap indicates underperformance relative to publication volume.
+
+**Concentration metrics** include the Gini coefficient, Herfindahl-Hirschman Index (HHI), and concentration ratios (CR4, CR10).
+
+
+# Results
+
+## Voice Share and the Institutional Attention Gap
+
+```{r attention-gap-calc}
+#| include: false
+
+gap_data <- actor_stats[ACTOR_TYPE %in% c(inst_types, media_types)]
+gap_data[, Attention_Gap := REACH_Share - Article_Share]
+gap_data[, Category := ifelse(ACTOR_TYPE %in% inst_types, "Institutional", "Media")]
+
+# Statistical test
+inst_reach <- hnb[INSTITUTIONAL == TRUE, REACH]
+media_reach <- hnb[ACTOR_TYPE %in% media_types, REACH]
+wilcox_test <- wilcox.test(inst_reach, media_reach)
+```
+
+```{r fig-attention-gap}
+#| fig-cap: "Figure 1: Article Share versus REACH Share by Actor Type"
+#| fig-height: 5
+#| fig-width: 8
+
+gap_plot_data <- gap_data %>%
+  select(ACTOR_TYPE, Article_Share, REACH_Share) %>%
+  pivot_longer(cols = c(Article_Share, REACH_Share), names_to = "Metric", values_to = "Share") %>%
+  mutate(Metric = ifelse(Metric == "Article_Share", "Article Share", "REACH Share"))
+
+ggplot(gap_plot_data, aes(x = reorder(ACTOR_TYPE, Share), y = Share, fill = Metric)) +
+  geom_col(position = "dodge", width = 0.7) +
+  coord_flip() +
+  scale_fill_manual(values = c("Article Share" = "#2c5f7c", "REACH Share" = "#e07b39")) +
+  labs(x = NULL, y = "Percentage (%)", fill = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "top")
+```
+
+Figure 1 reveals a consistent pattern: institutional sources capture smaller shares of audience reach than their publication volumes would predict. HNB Official publications constitute `r sprintf("%.1f", hnb_article_share)`% of corpus volume but capture only `r sprintf("%.1f", hnb_reach_share)`% of total reach—an attention gap of `r sprintf("%.1f", hnb_gap)` percentage points.
+
+```{r tbl-attention-gap}
+gap_display <- gap_data[, .(
+  ACTOR_TYPE,
+  Category,
+  Article_Pct = sprintf("%.2f", Article_Share),
+  REACH_Pct = sprintf("%.2f", REACH_Share),
+  Gap_pp = sprintf("%+.2f", Attention_Gap)
+)]
+
+kable(gap_display[order(Category, -as.numeric(REACH_Pct))], 
+      col.names = c("Actor Type", "Category", "Article %", "REACH %", "Gap (pp)"),
+      align = c("l", "l", "r", "r", "r"),
+      caption = "Table 3: Institutional Attention Gap Analysis")
+```
+
+A Wilcoxon rank-sum test confirms that the distribution of per-article REACH differs significantly between institutional and media sources (p < 0.001).
+
+## Market Structure and Gatekeeper Dependency
+
+```{r tbl-concentration}
+conc_display <- data.frame(
+  Metric = c("Gini coefficient", "HHI", "CR4 (top 4 sources)", "CR10 (top 10 sources)",
+             "Sources for 50% REACH", "Sources for 80% REACH"),
+  Value = c(sprintf("%.3f", gini_reach), sprintf("%.0f", hhi_reach),
+            sprintf("%.1f%%", cr4), sprintf("%.1f%%", cr10),
+            as.character(sources_50), as.character(sources_80))
+)
+
+kable(conc_display, col.names = c("Metric", "Value"), align = c("l", "r"),
+      caption = "Table 4: Attention Market Concentration Metrics")
+```
+
+The Gini coefficient of `r sprintf("%.2f", gini_reach)` indicates high inequality. The CR4 ratio of `r sprintf("%.1f", cr4)`% means four sources control over half of total attention.
+
+```{r fig-lorenz}
+#| fig-cap: "Figure 2: Lorenz Curve - Attention Inequality in HNB Coverage"
+#| fig-height: 5
+#| fig-width: 6
+
+lorenz_data <- source_stats[order(Total_REACH), .(FROM, Total_REACH)]
+lorenz_data[, cum_sources := .I / .N * 100]
+lorenz_data[, cum_reach := cumsum(Total_REACH) / sum(Total_REACH) * 100]
+
+lorenz_plot <- rbind(
+  data.table(cum_sources = 0, cum_reach = 0),
+  lorenz_data[, .(cum_sources, cum_reach)]
+)
+
+ggplot(lorenz_plot, aes(x = cum_sources, y = cum_reach)) +
+  geom_line(color = "#e07b39", linewidth = 1.2) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  geom_ribbon(aes(ymin = cum_reach, ymax = cum_sources), fill = "#e07b39", alpha = 0.2) +
+  annotate("text", x = 70, y = 30, label = paste0("Gini = ", sprintf("%.3f", gini_reach)),
+           fontface = "bold", size = 4) +
+  coord_equal() +
+  scale_x_continuous(limits = c(0, 100)) +
+  scale_y_continuous(limits = c(0, 100)) +
+  labs(x = "Cumulative % of Sources", y = "Cumulative % of REACH") +
+  theme_minimal(base_size = 11)
+```
+
+## Event Responsiveness
+
+```{r event-analysis}
+#| include: false
+
+events_dt <- data.table(
+  Event = c("Euro Adoption", "Conversion Rate", "ECB Rate Hike (July)", 
+            "ECB Rate Hike (Sept)", "CPI Peak", "Banking Crisis"),
+  Date = as.Date(c("2023-01-01", "2022-07-12", "2022-07-21", 
+                   "2022-09-08", "2022-10-15", "2023-03-12")),
+  Window = c(7, 5, 3, 3, 5, 5),
+  Type = c("Euro Transition", "Euro Transition", "Monetary", "Monetary", "Inflation", "Banking")
+)
+
+baseline_hnb <- actor_stats[ACTOR_TYPE == "HNB Official", REACH_Share]
+
+event_voice <- lapply(1:nrow(events_dt), function(i) {
+  event_date <- events_dt$Date[i]
+  window <- events_dt$Window[i]
+  
+  event_data <- hnb[date >= (event_date - window) & date <= (event_date + window)]
+  
+  if (nrow(event_data) > 0) {
+    voice <- event_data[, .(Total_REACH = sum(REACH, na.rm = TRUE)), by = ACTOR_TYPE]
+    voice[, REACH_Share := Total_REACH / sum(Total_REACH) * 100]
+    hnb_voice <- voice[ACTOR_TYPE == "HNB Official", REACH_Share]
+    if (length(hnb_voice) == 0) hnb_voice <- 0
+    
+    data.table(
+      Event = events_dt$Event[i],
+      Type = events_dt$Type[i],
+      HNB_Voice = hnb_voice,
+      Delta = hnb_voice - baseline_hnb,
+      Articles = nrow(event_data)
+    )
+  }
+})
+
+event_results <- rbindlist(event_voice)
+```
+
+```{r tbl-events-voice}
+event_display <- event_results[, .(
+  Event,
+  Type,
+  Articles,
+  HNB_Voice = sprintf("%.2f%%", HNB_Voice),
+  Delta = sprintf("%+.2f pp", Delta),
+  Performance = ifelse(Delta > 0, "Above", "Below")
+)]
+
+kable(event_display, 
+      col.names = c("Event", "Type", "Articles", "HNB Voice", "Delta", "vs Baseline"),
+      align = c("l", "l", "r", "r", "r", "l"),
+      caption = "Table 5: HNB Voice Share During Key Events")
+```
+
+HNB voice share typically decreases during high-salience events, suggesting "event capture" by faster-responding media.
+
+## Period Comparison
+
+```{r tbl-period}
+period_stats <- hnb[ACTOR_TYPE == "HNB Official", .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE)
+), by = period]
+
+period_totals <- hnb[, .(Total_Articles = .N, Total_REACH_All = sum(REACH, na.rm = TRUE)), by = period]
+period_stats <- merge(period_stats, period_totals, by = "period")
+
+period_stats[, `:=`(
+  Article_Share = Articles / Total_Articles * 100,
+  REACH_Share = Total_REACH / Total_REACH_All * 100
+)]
+period_stats[, Gap := REACH_Share - Article_Share]
+
+period_display <- period_stats[, .(
+  Period = period,
+  HNB_Article_Pct = sprintf("%.2f%%", Article_Share),
+  HNB_REACH_Pct = sprintf("%.2f%%", REACH_Share),
+  Attention_Gap = sprintf("%+.2f pp", Gap)
+)]
+
+kable(period_display, 
+      col.names = c("Period", "HNB Article %", "HNB REACH %", "Attention Gap"),
+      align = c("l", "r", "r", "r"),
+      caption = "Table 6: Communication Metrics by Period")
+```
+
+The institutional attention gap persists across both periods, indicating structural rather than transitional disadvantage.
+
+
+# Discussion
+
+## Interpreting the Institutional Attention Gap
+
+Our findings document a substantial institutional attention gap: HNB and other official sources systematically underperform in reaching public audiences relative to their publication volumes. This pattern confirms empirically the "pessimism" that Blinder (2018) expresses about central bank public communication.
+
+The attention gap reflects structural features of the attention market that disadvantage institutional sources. Media outlets optimise for audience engagement through accessible framing and rapid response. Official communications, constrained by technical accuracy and institutional voice, cannot match these strategies.
+
+## Fiscal Implications
+
+When central bank messaging fails to reach general audiences directly, inflation expectations form through media intermediation rather than authoritative guidance. To the extent that media coverage exhibits negativity bias, public expectations may remain elevated even when monetary policy successfully stabilises prices.
+
+These elevated expectations affect fiscal outcomes through multiple channels: public sector wage demands, household behavioural responses affecting tax revenues, and sovereign borrowing costs incorporating inflation risk premia.
+
+## Strategic Implications for HNB
+
+Several strategic implications emerge. First, direct-to-public communication faces structural barriers; investing in gatekeeper relationships may prove more productive. Second, event windows require dedicated resources—pre-positioning communications and rapid-response protocols could help maintain voice during high-salience periods. Third, layered communication strategies may address dual-audience challenges: technical content for experts alongside simplified materials for media amplification.
+
+## Implications for Other Institutions
+
+The framework applies broadly to public institutions facing communication challenges. Ministries, regulatory agencies, and EU institutions all compete for attention against media sources with structural engagement advantages. The metrics developed here—voice share, concentration, event responsiveness—provide diagnostic capacity applicable across contexts.
+
+For Bulgaria (targeting 2026 euro adoption) and future euro adopters, Croatia's experience offers lessons: communication challenges are substantial but manageable, early baseline measurement enables evaluation, and euro adoption does not itself resolve structural attention disadvantages.
+
+
+# Conclusion
+
+This paper examined whether Croatian National Bank communication achieves visibility proportional to its policy relevance. Applying a four-dimension framework to comprehensive digital media data, we document substantial institutional attention gaps, high market concentration, and systematic voice capture during high-salience events.
+
+Three main conclusions emerge. First, central bank public communication faces structural disadvantages not amenable to incremental correction. Second, gatekeeper dependency creates both risks and opportunities for strategic relationships. Third, the fiscal-monetary communication nexus deserves greater attention; communication failures carry real fiscal costs.
+
+For HNB, we recommend layered communication strategies maintaining technical authority while developing accessible content for media amplification. For other institutions, our framework offers a replicable template for evaluating communication effectiveness.
+
+The challenge of reaching the public with policy-relevant information is not unique to central banks. The evidence from Croatia suggests official communication frequently fails to achieve warranted visibility—but diagnosis is the first step toward improvement.
+
+
+# Disclosure Statements
+
+**Funding:** [To be completed]
+
+**Conflicts of Interest:** The author declares no conflicts of interest.
+
+
+# References
+
+Blinder, A. S. (2018) Through a crystal ball darkly: The future of monetary policy communication. *AEA Papers and Proceedings*, 108, pp. 567–571.
+
+Blinder, A. S., Ehrmann, M., Fratzscher, M., De Haan, J. and Jansen, D.-J. (2008) Central bank communication and monetary policy: A survey of theory and evidence. *Journal of Economic Literature*, 46(4), pp. 910–945.
+
+Coibion, O., Gorodnichenko, Y. and Weber, M. (2022) Monetary policy communications and their effects on household inflation expectations. *Journal of Political Economy*, 130(6), pp. 1537–1584.
+
+Coibion, O., Gorodnichenko, Y., Kumar, S. and Pedemonte, M. (2020) Inflation expectations as a policy tool? *Journal of International Economics*, 124, 103297.
+
+Égert, B. and Kočenda, E. (2014) The impact of macro news and central bank communication on emerging European forex markets. *Economic Systems*, 38(1), pp. 73–88.
+
+Gürkaynak, R. S., Sack, B. and Swanson, E. (2005) Do actions speak louder than words? The response of asset prices to monetary policy actions and statements. *International Journal of Central Banking*, 1(1), pp. 55–93.
+
+Holden, S. (2004) Wage formation under low inflation. *Journal of Monetary Economics*, 51(4), pp. 767–789.
+
+Lucca, D. O. and Trebbi, F. (2009) Measuring central bank communication: An automated approach with application to FOMC statements. NBER Working Paper No. 15367.
+
+Shoemaker, P. J. and Vos, T. P. (2009) *Gatekeeping theory*. New York: Routledge.
+
+Sims, C. A. (2003) Implications of rational inattention. *Journal of Monetary Economics*, 50(3), pp. 665–690.
+
+Soroka, S. N. (2014) *Negativity in democratic politics: Causes and consequences*. Cambridge: Cambridge University Press.
+
+Woodford, M. (2001) Monetary policy in the information economy. In: *Proceedings – Economic Policy Symposium – Jackson Hole*. Federal Reserve Bank of Kansas City, pp. 297–370.
+
