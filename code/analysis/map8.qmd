@@ -1,0 +1,1091 @@
+---
+title: "HNB DigiMedia Map 8: Readability and Accessibility"
+subtitle: "Analyzing Linguistic Complexity and Its Relationship to Public Attention"
+author: "HNB DigiMedia Project"
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    code-fold: true
+    code-summary: "Show code"
+    theme: cosmo
+    fig-width: 10
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(data.table)
+library(scales)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(viridis)
+library(lubridate)
+library(patchwork)
+library(ggrepel)
+library(stringi)  # For Unicode-safe string operations
+
+theme_set(theme_minimal(base_size = 12) +
+          theme(
+            plot.title = element_text(face = "bold", size = 14),
+            plot.subtitle = element_text(color = "gray40"),
+            legend.position = "bottom"
+          ))
+
+# Color palette for actor types
+actor_colors <- c(
+  "HNB Official" = "#1a3c5a",
+  "Financial Regulators" = "#2c5f7c",
+  "Commercial Banks" = "#4a9c6d",
+  "Financial Media" = "#e07b39",
+  "General Media" = "#c44536",
+  "International Sources" = "#6b4c9a",
+  "Academic/Expert" = "#64748b",
+  "Political Actors" = "#eab308",
+  "Financial Influencers" = "#ec4899",
+  "Government" = "#0ea5e9",
+  "Other" = "#94a3b8"
+)
+
+# Period colors
+period_colors <- c(
+  "ERM II" = "#3498db",
+  "Euro Era" = "#27ae60"
+)
+
+# Complexity level colors
+complexity_colors <- c(
+  "Simple" = "#22c55e",
+  "Moderate" = "#eab308",
+  "Complex" = "#f97316",
+  "Very Complex" = "#ef4444"
+)
+```
+
+# Introduction
+
+This document presents **Map 8: Readability and Accessibility Analysis** of the HNB DigiMedia project. The core question driving this analysis is:
+
+> **Is HNB communication accessible to the Croatian public, and does linguistic complexity predict attention?**
+
+## Theoretical Motivation
+
+The literature documents concerning trends in central bank communication complexity:
+
+1. **Rising complexity:** FOMC statements reached grade level 18-19 under Yellen versus grade 14 under Greenspan
+2. **Clarity-volatility tradeoff:** Bulíř, Čihák, and Jansen (2013) documented an inverse relationship between communication clarity and financial market volatility
+3. **Dual complexity:** McMahon and Naylor (2023) distinguish semantic complexity (vocabulary difficulty) from conceptual complexity (idea density)
+4. **Public disconnect:** Even the ECB's 2021 inflation target revision "went largely unnoticed by consumers," suggesting accessibility barriers
+
+For smaller central banks like HNB, the challenge is compounded by:
+
+- Limited resources for communication simplification
+- Need to maintain technical precision for market participants
+- Balancing expert and public audiences simultaneously
+
+## Readability Framework for Croatian
+
+Standard readability formulas (Flesch-Kincaid, Gunning Fog) are calibrated for English. For Croatian text, we adapt metrics focusing on universal linguistic features:
+
+| Metric | Definition | Interpretation |
+|--------|------------|----------------|
+| Avg Sentence Length | Words per sentence | Higher = more complex |
+| Avg Word Length | Characters per word | Higher = more technical vocabulary |
+| Long Word Ratio | % words with 7+ characters | Higher = more complex |
+| Technical Term Density | Financial/economic terms per 100 words | Higher = more specialized |
+| LIX Score | Swedish formula adapted for Slavic languages | Higher = more difficult |
+
+**LIX Formula (Läsbarhetsindex):**
+$$LIX = \frac{Words}{Sentences} + \frac{Long Words \times 100}{Words}$$
+
+LIX Interpretation: <30 Very Easy, 30-40 Easy, 40-50 Medium, 50-60 Difficult, >60 Very Difficult
+
+```{r load-data}
+#| label: load-data
+
+hnb <- readRDS("C:/Users/lsikic/Dropbox/hnb.rds")
+setDT(hnb)
+
+hnb[, date := as.Date(DATE)]
+hnb[, year := year(date)]
+hnb[, month := month(date)]
+
+hnb[, period := fcase(
+  date < as.Date("2023-01-01"), "ERM II",
+  default = "Euro Era"
+)]
+hnb[, period := factor(period, levels = c("ERM II", "Euro Era"))]
+
+n_articles <- nrow(hnb)
+cat("Data loaded:", n_articles, "articles\n")
+```
+
+```{r actor-classification}
+#| label: actor-classification
+
+# =============================================================================
+# ACTOR CLASSIFICATION - SYNCHRONIZED WITH MAPS 1-7
+# =============================================================================
+
+manual_overrides <- list(
+  "HNB Official" = c(
+    "hnb.hr", "hrvatska narodna banka",
+    "hrvatska narodna banka / croatian national bank"
+  ),
+  "Financial Regulators" = c(
+    "hanfa.hr", "hanfa", "hrvatska agencija za nadzor financijskih usluga",
+    "fina.hr", "fina", "financijska agencija"
+  ),
+  "Government" = c(
+    "gov.hr", "vlada", "vlada republike hrvatske",
+    "ministarstvo financija", "sabor.hr"
+  ),
+  "Financial Media" = c(
+    "poslovni.hr", "poslovni dnevnik", "seebiz.eu", "seebiz",
+    "lider.media", "lidermedia.hr", "lider", "bloombergadria.com",
+    "bloomberg adria", "hrportfolio.hr", "privredni.hr"
+  ),
+  "Commercial Banks" = c(
+    "zaba.hr", "zagrebačka banka", "pbz.hr", "privredna banka zagreb",
+    "erste.hr", "erste banka", "hpb.hr", "hrvatska poštanska banka",
+    "otp banka", "raiffeisen", "addiko"
+  ),
+  "Academic/Expert" = c(
+    "eizg.hr", "ekonomski institut zagreb", "ijf.hr",
+    "institut za javne financije", "ekonomski fakultet"
+  )
+)
+
+general_media_sources <- c(
+  "index.hr", "index", "jutarnji.hr", "jutarnji", "jutarnji list",
+  "vecernji.hr", "vecernji", "večernji list",
+  "24sata.hr", "24sata", "slobodnadalmacija.hr", "slobodna dalmacija",
+  "novilist.hr", "novi list", "dnevnik.hr", "dnevnik",
+  "tportal.hr", "tportal", "telegram.hr", "telegram",
+  "net.hr", "rtl.hr", "rtl", "hrt.hr", "hrt",
+  "n1info.hr", "n1info.com", "n1", "nacional.hr", "nacional",
+  "direktno.hr", "direktno", "dnevno.hr", "dnevno"
+)
+
+classify_actor_hnb <- function(from_val, url_val = NA) {
+  from_lower <- tolower(trimws(as.character(from_val)))
+  url_lower <- tolower(ifelse(is.na(url_val), "", as.character(url_val)))
+  combined <- paste(from_lower, url_lower)
+  
+  match_any <- function(patterns, text, fixed = TRUE) {
+    any(sapply(patterns, function(p) grepl(p, text, fixed = fixed)))
+  }
+  
+  for (actor_type in names(manual_overrides)) {
+    if (match_any(manual_overrides[[actor_type]], from_lower)) {
+      return(actor_type)
+    }
+  }
+  
+  if (grepl("hnb\\.hr", url_lower) || grepl("hnb\\.hr", from_lower)) {
+    return("HNB Official")
+  }
+  
+  if (grepl("hanfa|fina\\.hr", combined)) {
+    return("Financial Regulators")
+  }
+  
+  if (grepl("gov\\.hr|vlada|ministarstvo", combined)) {
+    return("Government")
+  }
+  
+  bank_patterns <- c("banka", "bank", "zaba", "pbz", "erste", "hpb",
+                     "otp", "raiffeisen", "addiko", "sberbank")
+  if (match_any(bank_patterns, from_lower)) {
+    if (!grepl("narodna|hnb|central", from_lower)) {
+      return("Commercial Banks")
+    }
+  }
+  
+  financial_media_patterns <- c(
+    "poslovni", "seebiz", "lider", "bloomberg", "portfolio",
+    "privredni", "finance", "ekonom", "business", "capital"
+  )
+  if (match_any(financial_media_patterns, from_lower)) {
+    return("Financial Media")
+  }
+  
+  if (match_any(general_media_sources, from_lower)) {
+    return("General Media")
+  }
+  
+  news_patterns <- c("portal", "vijesti", "news", "info", "dnevni",
+                     "radio", "tv", ".hr")
+  if (match_any(news_patterns, from_lower)) {
+    return("General Media")
+  }
+  
+  return("Other")
+}
+
+hnb[, ACTOR_TYPE := mapply(classify_actor_hnb, FROM, URL)]
+hnb[, INSTITUTIONAL := ACTOR_TYPE %in% c("HNB Official", "Financial Regulators", "Government")]
+```
+
+# Analysis 8.1: Text Preprocessing and Readability Calculation
+
+## Define Readability Functions
+
+```{r readability-functions}
+#| label: readability-functions
+
+# Define financial/economic technical terms for Croatian context
+technical_terms <- c(
+  # Monetary policy
+  "monetarni", "monetarna", "monetarne", "monetarnog",
+  "inflacija", "inflacije", "inflacijom", "inflacijski",
+  "deflacija", "deflacije",
+  "kamatna", "kamatne", "kamatnih", "kamatnom",
+  "stopa", "stope", "stopom",
+  "likvidnost", "likvidnosti", "likvidnosni",
+  "devizni", "devizne", "deviznog", "deviza",
+  "tečaj", "tečaja", "tečajem", "tečajni",
+  "rezerve", "rezervi", "rezervama",
+  # Euro/currency
+
+  "euro", "eura", "eurom", "eurski",
+  "kuna", "kune", "kunom",
+  "konverzija", "konverzije", "konverzijom",
+  "eurozona", "eurozone", "eurozoni",
+  # Banking
+  "banka", "banke", "banaka", "bankarstvo", "bankarski",
+  "kredit", "kredita", "kreditni", "kreditiranje",
+  "depozit", "depozita", "depozitni",
+  "kapital", "kapitala", "kapitalni",
+  "solventnost", "solventnosti",
+  "bonitet", "boniteta", "bonitetni",
+  # Economic indicators
+  "bdp", "bruto", "domaći", "proizvod",
+  "gospodarski", "gospodarska", "gospodarstvo",
+  "ekonomski", "ekonomska", "ekonomije",
+  "makroekonomski", "makroekonomska",
+  "fiskalni", "fiskalna", "fiskalne",
+  "proračun", "proračuna", "proračunski",
+  "deficit", "deficita",
+  "suficit", "suficita",
+  "dug", "duga", "dugovi", "zaduženost",
+  # Financial instruments
+  "obveznica", "obveznice", "obvezničar",
+  "vrijednosnica", "vrijednosnice",
+  "dionice", "dionica", "dionički",
+  "portfolio", "portfelja",
+  "imovina", "imovine", "imovinski",
+  # Regulatory
+  "regulativa", "regulatorni", "regulator",
+  "supervizija", "supervizijski", "nadzor",
+  "propisi", "propis", "propisima",
+  "direktiva", "direktive", "uredba",
+  # Technical banking terms
+  "referentna", "referentni", "referentne",
+  "operacije", "operacija", "operativni",
+  "transmisija", "transmisijski",
+  "prilagodba", "prilagodbe", "konvergencija",
+  "stabilnost", "stabilnosti", "stabilan",
+  "volatilnost", "volatilnosti"
+)
+
+# Function to calculate readability metrics
+calculate_readability <- function(text) {
+  if (is.na(text) || nchar(text) < 50) {
+    return(list(
+      word_count = NA,
+      sentence_count = NA,
+      avg_sentence_length = NA,
+      avg_word_length = NA,
+      long_word_ratio = NA,
+      technical_density = NA,
+      lix_score = NA
+    ))
+  }
+  
+  # Clean text
+  text_clean <- tolower(text)
+  text_clean <- gsub("[[:punct:]]", " ", text_clean)
+  text_clean <- gsub("\\s+", " ", text_clean)
+  text_clean <- trimws(text_clean)
+  
+  # Tokenize words
+  words <- unlist(strsplit(text_clean, "\\s+"))
+  words <- words[nchar(words) > 0]
+  word_count <- length(words)
+  
+  if (word_count < 10) {
+    return(list(
+      word_count = word_count,
+      sentence_count = NA,
+      avg_sentence_length = NA,
+      avg_word_length = NA,
+      long_word_ratio = NA,
+      technical_density = NA,
+      lix_score = NA
+    ))
+  }
+  
+  # Count sentences (approximate by punctuation in original text)
+  sentence_count <- max(1, length(gregexpr("[.!?]+", text)[[1]]))
+  
+  # Average sentence length
+  avg_sentence_length <- word_count / sentence_count
+  
+  # Average word length (characters)
+  avg_word_length <- mean(nchar(words))
+  
+  # Long words (7+ characters, adapted for Croatian's longer average word length)
+  long_words <- sum(nchar(words) >= 7)
+  long_word_ratio <- long_words / word_count * 100
+  
+  # Technical term density
+  technical_count <- sum(words %in% technical_terms)
+  technical_density <- technical_count / word_count * 100
+  
+  # LIX score
+  lix_score <- avg_sentence_length + long_word_ratio
+  
+  return(list(
+    word_count = word_count,
+    sentence_count = sentence_count,
+    avg_sentence_length = avg_sentence_length,
+    avg_word_length = avg_word_length,
+    long_word_ratio = long_word_ratio,
+    technical_density = technical_density,
+    lix_score = lix_score
+  ))
+}
+```
+
+## Calculate Readability for All Articles
+
+```{r calculate-readability}
+#| label: calculate-readability
+
+# Determine which text field to use
+text_field <- if ("FULL_TEXT" %in% names(hnb) && sum(!is.na(hnb$FULL_TEXT)) > 100) {
+  "FULL_TEXT"
+} else if ("TITLE" %in% names(hnb)) {
+  "TITLE"
+} else {
+  NULL
+}
+
+if (!is.null(text_field)) {
+  cat("Using text field:", text_field, "\n")
+  
+  # Calculate readability metrics
+  readability_list <- lapply(hnb[[text_field]], calculate_readability)
+  
+  # Convert to data.table columns
+  hnb[, `:=`(
+    word_count = sapply(readability_list, function(x) x$word_count),
+    sentence_count = sapply(readability_list, function(x) x$sentence_count),
+    avg_sentence_length = sapply(readability_list, function(x) x$avg_sentence_length),
+    avg_word_length = sapply(readability_list, function(x) x$avg_word_length),
+    long_word_ratio = sapply(readability_list, function(x) x$long_word_ratio),
+    technical_density = sapply(readability_list, function(x) x$technical_density),
+    lix_score = sapply(readability_list, function(x) x$lix_score)
+  )]
+  
+  # Classify complexity level based on LIX
+  hnb[, complexity_level := fcase(
+    lix_score < 30, "Simple",
+    lix_score < 45, "Moderate",
+    lix_score < 60, "Complex",
+    !is.na(lix_score), "Very Complex",
+    default = NA_character_
+  )]
+  hnb[, complexity_level := factor(complexity_level, 
+                                   levels = c("Simple", "Moderate", "Complex", "Very Complex"))]
+  
+  cat("Articles with readability scores:", sum(!is.na(hnb$lix_score)), "\n")
+} else {
+  cat("ERROR: No suitable text field found for readability analysis.\n")
+}
+```
+
+## Corpus Readability Overview
+
+```{r readability-overview}
+#| label: readability-overview
+
+if (!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) {
+  readability_summary <- hnb[!is.na(lix_score), .(
+    Articles = .N,
+    Mean_Word_Count = mean(word_count, na.rm = TRUE),
+    Mean_Sentence_Length = mean(avg_sentence_length, na.rm = TRUE),
+    Mean_Word_Length = mean(avg_word_length, na.rm = TRUE),
+    Mean_Long_Word_Ratio = mean(long_word_ratio, na.rm = TRUE),
+    Mean_Technical_Density = mean(technical_density, na.rm = TRUE),
+    Mean_LIX = mean(lix_score, na.rm = TRUE),
+    Median_LIX = median(lix_score, na.rm = TRUE)
+  )]
+  
+  tibble(
+    Metric = c("Articles analyzed", "Mean word count", "Mean sentence length (words)",
+               "Mean word length (chars)", "Mean long word ratio (%)", 
+               "Mean technical density (%)", "Mean LIX score", "Median LIX score"),
+    Value = c(
+      format(readability_summary$Articles, big.mark = ","),
+      sprintf("%.0f", readability_summary$Mean_Word_Count),
+      sprintf("%.1f", readability_summary$Mean_Sentence_Length),
+      sprintf("%.1f", readability_summary$Mean_Word_Length),
+      sprintf("%.1f%%", readability_summary$Mean_Long_Word_Ratio),
+      sprintf("%.2f%%", readability_summary$Mean_Technical_Density),
+      sprintf("%.1f", readability_summary$Mean_LIX),
+      sprintf("%.1f", readability_summary$Median_LIX)
+    )
+  ) %>%
+    kable(col.names = c("Metric", "Corpus Average")) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+}
+```
+
+# Analysis 8.2: Readability by Actor Type
+
+## Actor Type Comparison
+
+```{r actor-readability}
+#| label: actor-readability
+#| fig-height: 8
+
+if (!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) {
+  actor_readability <- hnb[!is.na(lix_score), .(
+    Articles = .N,
+    Mean_LIX = mean(lix_score, na.rm = TRUE),
+    SD_LIX = sd(lix_score, na.rm = TRUE),
+    Median_LIX = median(lix_score, na.rm = TRUE),
+    Mean_Sentence_Length = mean(avg_sentence_length, na.rm = TRUE),
+    Mean_Word_Length = mean(avg_word_length, na.rm = TRUE),
+    Mean_Technical_Density = mean(technical_density, na.rm = TRUE),
+    Mean_REACH = mean(REACH, na.rm = TRUE)
+  ), by = ACTOR_TYPE][order(-Mean_LIX)]
+  
+  ggplot(actor_readability[Articles >= 20], 
+         aes(x = reorder(ACTOR_TYPE, Mean_LIX), y = Mean_LIX, fill = ACTOR_TYPE)) +
+    geom_col(width = 0.7) +
+    geom_errorbar(aes(ymin = Mean_LIX - SD_LIX/sqrt(Articles),
+                      ymax = Mean_LIX + SD_LIX/sqrt(Articles)),
+                  width = 0.2) +
+    geom_hline(yintercept = c(30, 45, 60), linetype = "dashed", color = "gray50", alpha = 0.5) +
+    geom_text(aes(label = sprintf("%.1f", Mean_LIX)), hjust = -0.1, size = 3.5) +
+    coord_flip() +
+    scale_fill_manual(values = actor_colors) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+    annotate("text", y = 30, x = 0.5, label = "Easy", hjust = 1, size = 3, color = "gray40") +
+    annotate("text", y = 45, x = 0.5, label = "Medium", hjust = 1, size = 3, color = "gray40") +
+    annotate("text", y = 60, x = 0.5, label = "Difficult", hjust = 1, size = 3, color = "gray40") +
+    labs(
+      title = "Readability by Actor Type (LIX Score)",
+      subtitle = "Higher scores = more difficult to read (minimum 20 articles)",
+      x = NULL,
+      y = "Mean LIX Score",
+      caption = "Error bars show standard error; dashed lines show LIX difficulty thresholds"
+    ) +
+    theme(legend.position = "none")
+}
+```
+
+## Detailed Actor Readability Table
+
+```{r actor-readability-table}
+#| label: actor-readability-table
+
+if (!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) {
+  actor_readability[order(-Mean_LIX)] %>%
+    mutate(
+      Articles = format(Articles, big.mark = ","),
+      Mean_LIX = sprintf("%.1f", Mean_LIX),
+      SD_LIX = sprintf("%.1f", SD_LIX),
+      Mean_Sentence_Length = sprintf("%.1f", Mean_Sentence_Length),
+      Mean_Word_Length = sprintf("%.1f", Mean_Word_Length),
+      Mean_Technical_Density = sprintf("%.2f%%", Mean_Technical_Density),
+      Mean_REACH = format(round(Mean_REACH, 0), big.mark = ",")
+    ) %>%
+    select(ACTOR_TYPE, Articles, Mean_LIX, SD_LIX, Mean_Sentence_Length, 
+           Mean_Technical_Density, Mean_REACH) %>%
+    kable(col.names = c("Actor Type", "Articles", "Mean LIX", "SD", "Sentence Length",
+                        "Technical %", "Mean REACH")) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+}
+```
+
+## HNB Official vs Media Comparison
+
+```{r hnb-vs-media-readability}
+#| label: hnb-vs-media-readability
+#| fig-height: 7
+
+if (!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) {
+  # Focus comparison: HNB Official vs Financial Media vs General Media
+  comparison_actors <- c("HNB Official", "Financial Media", "General Media")
+  
+  comparison_data <- hnb[ACTOR_TYPE %in% comparison_actors & !is.na(lix_score)]
+  
+  p1 <- ggplot(comparison_data, aes(x = ACTOR_TYPE, y = lix_score, fill = ACTOR_TYPE)) +
+    geom_violin(alpha = 0.7) +
+    geom_boxplot(width = 0.2, fill = "white", outlier.shape = NA) +
+    scale_fill_manual(values = actor_colors) +
+    labs(
+      title = "LIX Score Distribution",
+      x = NULL,
+      y = "LIX Score"
+    ) +
+    theme(legend.position = "none")
+  
+  p2 <- ggplot(comparison_data, aes(x = ACTOR_TYPE, y = technical_density, fill = ACTOR_TYPE)) +
+    geom_violin(alpha = 0.7) +
+    geom_boxplot(width = 0.2, fill = "white", outlier.shape = NA) +
+    scale_fill_manual(values = actor_colors) +
+    labs(
+      title = "Technical Density Distribution",
+      x = NULL,
+      y = "Technical Terms (%)"
+    ) +
+    theme(legend.position = "none")
+  
+  p1 + p2 + plot_annotation(
+    title = "HNB Official vs Media: Readability Comparison",
+    subtitle = "Violin plots show full distribution; boxes show median and IQR"
+  )
+}
+```
+
+## Statistical Test: Readability Differences
+
+```{r readability-kruskal}
+#| label: readability-kruskal
+
+if (!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) {
+  comparison_actors <- c("HNB Official", "Financial Media", "General Media")
+  test_data <- hnb[ACTOR_TYPE %in% comparison_actors & !is.na(lix_score)]
+  
+  # Kruskal-Wallis test for LIX differences
+  kruskal_lix <- kruskal.test(lix_score ~ ACTOR_TYPE, data = test_data)
+  kruskal_tech <- kruskal.test(technical_density ~ ACTOR_TYPE, data = test_data)
+  
+  cat("Statistical Tests for Readability Differences\n")
+  cat("==============================================\n\n")
+  cat("Kruskal-Wallis Test: LIX Score by Actor Type\n")
+  cat("Chi-squared:", round(kruskal_lix$statistic, 2), "\n")
+  cat("p-value:", format.pval(kruskal_lix$p.value, digits = 4), "\n\n")
+  cat("Kruskal-Wallis Test: Technical Density by Actor Type\n")
+  cat("Chi-squared:", round(kruskal_tech$statistic, 2), "\n")
+  cat("p-value:", format.pval(kruskal_tech$p.value, digits = 4), "\n")
+}
+```
+
+# Analysis 8.3: Complexity and Attention Relationship
+
+## Does Readability Predict REACH?
+
+```{r complexity-reach-correlation}
+#| label: complexity-reach-correlation
+#| fig-height: 7
+
+if (!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) {
+  # Correlation analysis
+  cor_lix_reach <- cor(hnb$lix_score, hnb$REACH, use = "complete.obs", method = "spearman")
+  cor_tech_reach <- cor(hnb$technical_density, hnb$REACH, use = "complete.obs", method = "spearman")
+  cor_sent_reach <- cor(hnb$avg_sentence_length, hnb$REACH, use = "complete.obs", method = "spearman")
+  
+  cat("Correlation with REACH (Spearman)\n")
+  cat("=================================\n")
+  cat("LIX Score ↔ REACH:", sprintf("%.3f", cor_lix_reach), "\n")
+  cat("Technical Density ↔ REACH:", sprintf("%.3f", cor_tech_reach), "\n")
+  cat("Sentence Length ↔ REACH:", sprintf("%.3f", cor_sent_reach), "\n")
+  
+  # Scatter plot with binned means
+  hnb[!is.na(lix_score), lix_bin := cut(lix_score, breaks = seq(0, 100, 10), include.lowest = TRUE)]
+  
+  binned_reach <- hnb[!is.na(lix_bin), .(
+    Mean_REACH = mean(REACH, na.rm = TRUE),
+    Median_REACH = median(REACH, na.rm = TRUE),
+    Articles = .N
+  ), by = lix_bin][order(lix_bin)]
+  
+  ggplot(binned_reach[Articles >= 20], aes(x = lix_bin, y = Mean_REACH)) +
+    geom_col(fill = "#2c5f7c", alpha = 0.7) +
+    geom_text(aes(label = format(round(Mean_REACH, 0), big.mark = ",")), 
+              vjust = -0.3, size = 3) +
+    scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.15))) +
+    labs(
+      title = "Mean REACH by Readability Level",
+      subtitle = paste0("Spearman correlation: ρ = ", sprintf("%.3f", cor_lix_reach)),
+      x = "LIX Score Range",
+      y = "Mean REACH",
+      caption = "Only bins with 20+ articles shown"
+    ) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+```
+
+## Complexity Level and Attention
+
+```{r complexity-level-reach}
+#| label: complexity-level-reach
+#| fig-height: 7
+
+if (!is.null(text_field) && sum(!is.na(hnb$complexity_level)) > 0) {
+  complexity_reach <- hnb[!is.na(complexity_level), .(
+    Articles = .N,
+    Total_REACH = sum(REACH, na.rm = TRUE),
+    Mean_REACH = mean(REACH, na.rm = TRUE),
+    Median_REACH = median(REACH, na.rm = TRUE)
+  ), by = complexity_level]
+  
+  complexity_reach[, `:=`(
+    Article_Share = Articles / sum(Articles) * 100,
+    REACH_Share = Total_REACH / sum(Total_REACH) * 100
+  )]
+  
+  complexity_reach[, Efficiency := REACH_Share / Article_Share]
+  
+  p1 <- ggplot(complexity_reach, aes(x = complexity_level, y = Mean_REACH, fill = complexity_level)) +
+    geom_col(width = 0.6) +
+    geom_text(aes(label = format(round(Mean_REACH, 0), big.mark = ",")), vjust = -0.3, size = 3.5) +
+    scale_fill_manual(values = complexity_colors) +
+    scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.15))) +
+    labs(
+      title = "Mean REACH by Complexity Level",
+      x = NULL,
+      y = "Mean REACH"
+    ) +
+    theme(legend.position = "none")
+  
+  p2 <- ggplot(complexity_reach, aes(x = complexity_level, y = Efficiency, fill = complexity_level)) +
+    geom_col(width = 0.6) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
+    geom_text(aes(label = sprintf("%.2fx", Efficiency)), vjust = -0.3, size = 3.5) +
+    scale_fill_manual(values = complexity_colors) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+    labs(
+      title = "Attention Efficiency by Complexity",
+      subtitle = "REACH Share / Article Share",
+      x = NULL,
+      y = "Efficiency"
+    ) +
+    theme(legend.position = "none")
+  
+  p1 + p2
+}
+```
+
+## Complexity-Attention Table
+
+```{r complexity-table}
+#| label: complexity-table
+
+if (!is.null(text_field) && sum(!is.na(hnb$complexity_level)) > 0) {
+  complexity_reach %>%
+    mutate(
+      Articles = format(Articles, big.mark = ","),
+      Total_REACH = format(Total_REACH, big.mark = ","),
+      Mean_REACH = format(round(Mean_REACH, 0), big.mark = ","),
+      Median_REACH = format(round(Median_REACH, 0), big.mark = ","),
+      Article_Share = sprintf("%.1f%%", Article_Share),
+      REACH_Share = sprintf("%.1f%%", REACH_Share),
+      Efficiency = sprintf("%.2fx", Efficiency)
+    ) %>%
+    kable(col.names = c("Complexity", "Articles", "Total REACH", "Mean REACH",
+                        "Median REACH", "Article %", "REACH %", "Efficiency")) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+}
+```
+
+# Analysis 8.4: Optimal Complexity Analysis
+
+## Is There a "Sweet Spot"?
+
+We search for the complexity level that maximizes attention capture.
+
+```{r optimal-complexity}
+#| label: optimal-complexity
+#| fig-height: 7
+
+if (!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) {
+  # Create finer bins for optimal complexity search
+  hnb[!is.na(lix_score), lix_fine_bin := cut(lix_score, breaks = seq(0, 100, 5), include.lowest = TRUE)]
+  
+  fine_binned <- hnb[!is.na(lix_fine_bin), .(
+    Mean_LIX = mean(lix_score, na.rm = TRUE),
+    Mean_REACH = mean(REACH, na.rm = TRUE),
+    Total_REACH = sum(REACH, na.rm = TRUE),
+    Articles = .N
+  ), by = lix_fine_bin][Articles >= 10][order(lix_fine_bin)]
+  
+  # Find optimal bin
+  optimal_bin <- fine_binned[which.max(Mean_REACH)]
+  
+  ggplot(fine_binned, aes(x = Mean_LIX, y = Mean_REACH)) +
+    geom_point(aes(size = Articles), color = "#2c5f7c", alpha = 0.7) +
+    geom_smooth(method = "loess", se = TRUE, color = "#e07b39", fill = "#e07b39", alpha = 0.2) +
+    geom_vline(xintercept = optimal_bin$Mean_LIX, linetype = "dashed", color = "#22c55e") +
+    annotate("text", x = optimal_bin$Mean_LIX + 2, y = max(fine_binned$Mean_REACH) * 0.9,
+             label = paste0("Optimal: LIX ≈ ", round(optimal_bin$Mean_LIX, 0)),
+             hjust = 0, color = "#22c55e", fontface = "bold") +
+    scale_size_continuous(range = c(2, 10)) +
+    scale_y_continuous(labels = comma) +
+    labs(
+      title = "Optimal Complexity Search",
+      subtitle = "Is there a readability 'sweet spot' for maximum attention?",
+      x = "Mean LIX Score",
+      y = "Mean REACH",
+      size = "Articles"
+    )
+  
+  cat("\nOptimal Complexity Analysis\n")
+  cat("===========================\n")
+  cat("Optimal LIX range:", as.character(optimal_bin$lix_fine_bin), "\n")
+  cat("Mean LIX in optimal bin:", round(optimal_bin$Mean_LIX, 1), "\n")
+  cat("Mean REACH in optimal bin:", format(round(optimal_bin$Mean_REACH, 0), big.mark = ","), "\n")
+  cat("Articles in optimal bin:", format(optimal_bin$Articles, big.mark = ","), "\n")
+}
+```
+
+## Complexity-REACH by Actor Type
+
+```{r complexity-reach-actor}
+#| label: complexity-reach-actor
+#| fig-height: 8
+
+if (!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) {
+  # Does the complexity-REACH relationship differ by actor type?
+  actor_correlation <- hnb[!is.na(lix_score) & ACTOR_TYPE != "Other", .(
+    Correlation = cor(lix_score, REACH, use = "complete.obs", method = "spearman"),
+    Articles = .N,
+    Mean_LIX = mean(lix_score, na.rm = TRUE),
+    Mean_REACH = mean(REACH, na.rm = TRUE)
+  ), by = ACTOR_TYPE][Articles >= 50][order(Correlation)]
+  
+  ggplot(actor_correlation, aes(x = reorder(ACTOR_TYPE, Correlation), y = Correlation, fill = ACTOR_TYPE)) +
+    geom_col(width = 0.7) +
+    geom_hline(yintercept = 0, linetype = "solid", color = "gray50") +
+    geom_text(aes(label = sprintf("%.3f", Correlation)), 
+              hjust = ifelse(actor_correlation$Correlation >= 0, -0.1, 1.1), size = 3.5) +
+    coord_flip() +
+    scale_fill_manual(values = actor_colors) +
+    labs(
+      title = "LIX-REACH Correlation by Actor Type",
+      subtitle = "Does complexity affect attention differently for different sources?",
+      x = NULL,
+      y = "Spearman Correlation (LIX ↔ REACH)",
+      caption = "Positive = complex content gets more attention; Negative = simpler content gets more attention"
+    ) +
+    theme(legend.position = "none")
+}
+```
+
+# Analysis 8.5: Technical Term Analysis
+
+## Most Frequent Technical Terms
+
+```{r technical-terms}
+#| label: technical-terms
+#| fig-height: 8
+
+if (!is.null(text_field)) {
+  # Count technical term frequencies across corpus
+  all_text <- paste(hnb[[text_field]][!is.na(hnb[[text_field]])], collapse = " ")
+  all_text_clean <- tolower(all_text)
+  all_text_clean <- gsub("[[:punct:]]", " ", all_text_clean)
+  all_words <- unlist(strsplit(all_text_clean, "\\s+"))
+  
+  tech_counts <- data.table(term = all_words)[term %in% technical_terms, .N, by = term][order(-N)]
+  
+  if (nrow(tech_counts) > 0) {
+    ggplot(tech_counts[1:min(30, nrow(tech_counts))], 
+           aes(x = reorder(term, N), y = N)) +
+      geom_col(fill = "#2c5f7c", width = 0.8) +
+      geom_text(aes(label = format(N, big.mark = ",")), hjust = -0.1, size = 3) +
+      coord_flip() +
+      scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.15))) +
+      labs(
+        title = "Most Frequent Technical Terms in Corpus",
+        subtitle = "Financial and monetary policy vocabulary",
+        x = NULL,
+        y = "Frequency"
+      )
+  }
+}
+```
+
+## Technical Density by Period
+
+```{r technical-period}
+#| label: technical-period
+#| fig-height: 6
+
+if (!is.null(text_field) && sum(!is.na(hnb$technical_density)) > 0) {
+  period_technical <- hnb[!is.na(technical_density), .(
+    Articles = .N,
+    Mean_Technical = mean(technical_density, na.rm = TRUE),
+    Mean_LIX = mean(lix_score, na.rm = TRUE),
+    Mean_REACH = mean(REACH, na.rm = TRUE)
+  ), by = period]
+  
+  ggplot(period_technical, aes(x = period, y = Mean_Technical, fill = period)) +
+    geom_col(width = 0.5) +
+    geom_text(aes(label = sprintf("%.2f%%", Mean_Technical)), vjust = -0.3, size = 4) +
+    scale_fill_manual(values = period_colors) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+    labs(
+      title = "Technical Term Density by Period",
+      subtitle = "Did language become more or less technical after euro adoption?",
+      x = "Period",
+      y = "Mean Technical Density (%)"
+    ) +
+    theme(legend.position = "none")
+}
+```
+
+# Analysis 8.6: Period Comparison
+
+## Readability Changes: ERM II vs Euro Era
+
+```{r period-readability}
+#| label: period-readability
+#| fig-height: 7
+
+if (!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) {
+  period_readability <- hnb[!is.na(lix_score), .(
+    Articles = .N,
+    Mean_LIX = mean(lix_score, na.rm = TRUE),
+    SD_LIX = sd(lix_score, na.rm = TRUE),
+    Mean_Sentence_Length = mean(avg_sentence_length, na.rm = TRUE),
+    Mean_Word_Length = mean(avg_word_length, na.rm = TRUE),
+    Mean_Technical_Density = mean(technical_density, na.rm = TRUE),
+    Mean_REACH = mean(REACH, na.rm = TRUE)
+  ), by = period]
+  
+  period_long <- period_readability %>%
+    select(period, Mean_LIX, Mean_Sentence_Length, Mean_Technical_Density) %>%
+    pivot_longer(cols = -period, names_to = "Metric", values_to = "Value") %>%
+    mutate(Metric = case_when(
+      Metric == "Mean_LIX" ~ "LIX Score",
+      Metric == "Mean_Sentence_Length" ~ "Sentence Length",
+      Metric == "Mean_Technical_Density" ~ "Technical Density (%)"
+    ))
+  
+  ggplot(period_long, aes(x = Metric, y = Value, fill = period)) +
+    geom_col(position = "dodge", width = 0.6) +
+    geom_text(aes(label = sprintf("%.1f", Value)), 
+              position = position_dodge(width = 0.6), vjust = -0.3, size = 3.5) +
+    facet_wrap(~Metric, scales = "free") +
+    scale_fill_manual(values = period_colors) +
+    labs(
+      title = "Readability Metrics by Period",
+      subtitle = "Did communication complexity change with euro adoption?",
+      x = NULL,
+      y = "Value",
+      fill = "Period"
+    ) +
+    theme(legend.position = "top", axis.text.x = element_blank())
+}
+```
+
+## Period Readability Table
+
+```{r period-readability-table}
+#| label: period-readability-table
+
+if (!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) {
+  # Calculate change
+  if (nrow(period_readability) == 2) {
+    erm2 <- period_readability[period == "ERM II"]
+    euro <- period_readability[period == "Euro Era"]
+    
+    lix_change <- (euro$Mean_LIX - erm2$Mean_LIX) / erm2$Mean_LIX * 100
+    tech_change <- (euro$Mean_Technical_Density - erm2$Mean_Technical_Density) / erm2$Mean_Technical_Density * 100
+  }
+  
+  period_readability %>%
+    mutate(
+      Articles = format(Articles, big.mark = ","),
+      Mean_LIX = sprintf("%.1f", Mean_LIX),
+      SD_LIX = sprintf("%.1f", SD_LIX),
+      Mean_Sentence_Length = sprintf("%.1f", Mean_Sentence_Length),
+      Mean_Word_Length = sprintf("%.1f", Mean_Word_Length),
+      Mean_Technical_Density = sprintf("%.2f%%", Mean_Technical_Density),
+      Mean_REACH = format(round(Mean_REACH, 0), big.mark = ",")
+    ) %>%
+    kable(col.names = c("Period", "Articles", "Mean LIX", "SD LIX", "Sentence Len",
+                        "Word Len", "Technical %", "Mean REACH")) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+  
+  if (exists("lix_change")) {
+    cat("\nPeriod Change Summary:\n")
+    cat("LIX score change:", sprintf("%+.1f%%", lix_change), "\n")
+    cat("Technical density change:", sprintf("%+.1f%%", tech_change), "\n")
+  }
+}
+```
+
+## Monthly Readability Trends
+
+```{r monthly-readability}
+#| label: monthly-readability
+#| fig-height: 6
+
+if (!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) {
+  monthly_readability <- hnb[!is.na(lix_score), .(
+    Mean_LIX = mean(lix_score, na.rm = TRUE),
+    Mean_Technical = mean(technical_density, na.rm = TRUE),
+    Articles = .N
+  ), by = .(year, month)]
+  
+  monthly_readability[, date_month := as.Date(paste(year, month, "01", sep = "-"))]
+  
+  ggplot(monthly_readability[Articles >= 10], aes(x = date_month, y = Mean_LIX)) +
+    geom_line(color = "#2c5f7c", linewidth = 0.8) +
+    geom_smooth(method = "loess", se = TRUE, color = "#e07b39", fill = "#e07b39", alpha = 0.2) +
+    geom_vline(xintercept = as.Date("2023-01-01"), linetype = "dashed", color = "#27ae60") +
+    annotate("text", x = as.Date("2023-01-01"), y = max(monthly_readability$Mean_LIX, na.rm = TRUE) * 0.95,
+             label = "Euro", hjust = -0.1, color = "#27ae60", fontface = "bold") +
+    scale_x_date(date_labels = "%Y-%m", date_breaks = "3 months") +
+    labs(
+      title = "Monthly Readability Trend (LIX Score)",
+      subtitle = "Did communication complexity change over time?",
+      x = NULL,
+      y = "Mean LIX Score"
+    ) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+```
+
+# Summary and Key Findings
+
+## Readability Summary
+
+```{r final-summary}
+#| label: final-summary
+
+if (!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) {
+  # Key findings
+  corpus_mean_lix <- mean(hnb$lix_score, na.rm = TRUE)
+  hnb_official_lix <- mean(hnb[ACTOR_TYPE == "HNB Official", lix_score], na.rm = TRUE)
+  general_media_lix <- mean(hnb[ACTOR_TYPE == "General Media", lix_score], na.rm = TRUE)
+  
+  tibble(
+    Finding = c(
+      "Corpus mean LIX score",
+      "LIX interpretation",
+      "HNB Official mean LIX",
+      "General Media mean LIX",
+      "Readability gap (HNB - General)",
+      "LIX-REACH correlation",
+      "Mean technical term density",
+      "Optimal complexity (max REACH)",
+      "Most common technical term"
+    ),
+    Value = c(
+      sprintf("%.1f", corpus_mean_lix),
+      case_when(
+        corpus_mean_lix < 30 ~ "Very Easy",
+        corpus_mean_lix < 40 ~ "Easy",
+        corpus_mean_lix < 50 ~ "Medium",
+        corpus_mean_lix < 60 ~ "Difficult",
+        TRUE ~ "Very Difficult"
+      ),
+      sprintf("%.1f", hnb_official_lix),
+      sprintf("%.1f", general_media_lix),
+      sprintf("%+.1f points", hnb_official_lix - general_media_lix),
+      sprintf("ρ = %.3f", cor_lix_reach),
+      sprintf("%.2f%%", mean(hnb$technical_density, na.rm = TRUE)),
+      sprintf("LIX ≈ %.0f", optimal_bin$Mean_LIX),
+      tech_counts$term[1]
+    )
+  ) %>%
+    kable(col.names = c("Finding", "Value")) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+}
+```
+
+## Implications for HNB Communication Strategy
+
+**1. Accessibility Gap**
+
+`r if(!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) sprintf("HNB Official communication (LIX = %.1f) is %s than General Media (LIX = %.1f), creating a %.1f-point readability gap.", hnb_official_lix, ifelse(hnb_official_lix > general_media_lix, "more complex", "simpler"), general_media_lix, abs(hnb_official_lix - general_media_lix))`
+
+**2. Complexity-Attention Relationship**
+
+`r if(!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) sprintf("The correlation between complexity and REACH is %.3f, suggesting that %s content tends to capture %s attention.", cor_lix_reach, ifelse(cor_lix_reach > 0, "more complex", "simpler"), ifelse(cor_lix_reach > 0, "more", "more"))`
+
+**3. Optimal Complexity**
+
+`r if(!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) sprintf("Maximum attention occurs around LIX score %.0f, suggesting this is the 'sweet spot' balancing accessibility and substance.", optimal_bin$Mean_LIX)`
+
+**4. Technical Language**
+
+The prevalence of technical terms (`r if(!is.null(text_field)) tech_counts$term[1]`, `r if(!is.null(text_field)) tech_counts$term[2]`, `r if(!is.null(text_field)) tech_counts$term[3]`) indicates specialized vocabulary that may limit public accessibility.
+
+**5. Layered Communication Recommendation**
+
+Following ECB best practices, HNB could benefit from:
+
+- Simplified summaries (target LIX < 40) for public audiences
+- Technical versions (current complexity) for market participants
+- Visual aids to reduce reliance on text comprehension
+
+---
+
+# Appendix: Methodological Notes
+
+## LIX Formula (Läsbarhetsindex)
+
+The LIX readability index, developed for Swedish but applicable to other languages including Slavic languages:
+
+$$LIX = \frac{W}{S} + \frac{L \times 100}{W}$$
+
+Where:
+
+- W = Total word count
+- S = Sentence count
+- L = Long words (7+ characters)
+
+**Interpretation Scale:**
+
+| LIX Score | Difficulty | Typical Text |
+|-----------|------------|--------------|
+| < 30 | Very Easy | Children's books |
+| 30-40 | Easy | Fiction, newspapers |
+| 40-50 | Medium | Non-fiction |
+| 50-60 | Difficult | Technical, academic |
+| > 60 | Very Difficult | Legal, bureaucratic |
+
+## Technical Term Dictionary
+
+The technical term list includes 100+ Croatian monetary policy and financial terms covering:
+
+- Monetary policy (inflacija, kamatna stopa, likvidnost)
+- Euro transition (euro, konverzija, eurozona)
+- Banking (kredit, depozit, solventnost)
+- Economic indicators (BDP, fiskalni, deficit)
+- Financial instruments (obveznica, dionice, portfolio)
+- Regulatory (supervizija, regulativa, nadzor)
+
+## Limitations
+
+1. LIX is a surface-level metric that does not capture conceptual complexity
+2. Croatian morphology (cases, conjugations) affects word length differently than English
+3. Technical term detection relies on a manually curated dictionary
+4. REACH may be influenced by factors beyond readability (timing, topic, source reputation)
+
+```{r session-info}
+#| label: session-info
+
+sessionInfo()
+```

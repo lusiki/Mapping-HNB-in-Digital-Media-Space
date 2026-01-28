@@ -1,0 +1,1074 @@
+---
+title: "HNB DigiMedia Map 9: Event Attribution Analysis"
+subtitle: "Who Captures Attention When It Matters Most?"
+author: "HNB DigiMedia Project"
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    code-fold: true
+    code-summary: "Show code"
+    theme: cosmo
+    fig-width: 10
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(data.table)
+library(scales)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(viridis)
+library(lubridate)
+library(patchwork)
+library(ggrepel)
+
+theme_set(theme_minimal(base_size = 12) +
+          theme(
+            plot.title = element_text(face = "bold", size = 14),
+            plot.subtitle = element_text(color = "gray40"),
+            legend.position = "bottom"
+          ))
+
+# Color palette for actor types
+actor_colors <- c(
+  "HNB Official" = "#1a3c5a",
+  "Financial Regulators" = "#2c5f7c",
+  "Commercial Banks" = "#4a9c6d",
+  "Financial Media" = "#e07b39",
+  "General Media" = "#c44536",
+  "International Sources" = "#6b4c9a",
+  "Academic/Expert" = "#64748b",
+  "Political Actors" = "#eab308",
+  "Financial Influencers" = "#ec4899",
+  "Government" = "#0ea5e9",
+  "Other" = "#94a3b8"
+)
+
+# Period colors
+period_colors <- c(
+  "ERM II" = "#3498db",
+  "Euro Era" = "#27ae60"
+)
+
+# Event type colors
+event_type_colors <- c(
+  "ECB Policy" = "#1a3c5a",
+  "Euro Transition" = "#27ae60",
+  "HNB Policy" = "#2c5f7c",
+  "Inflation" = "#c0392b",
+  "Political" = "#d35400",
+  "Banking" = "#8e44ad"
+)
+
+# Salience colors
+salience_colors <- c(
+  "High Salience" = "#ef4444",
+  "Normal" = "#64748b"
+)
+```
+
+# Introduction
+
+This document presents **Map 9: Event Attribution Analysis** of the HNB DigiMedia project. The core question driving this analysis is:
+
+> **Which actors capture attention during key policy events, and does HNB lose voice share when it matters most?**
+
+## Theoretical Motivation
+
+The literature establishes that event windows are when central bank communication matters most:
+
+1. **Market impact:** Born, Ehrmann, and Fratzscher (2012) documented that Financial Stability Reports move equity markets by more than 1% on average during the subsequent month
+2. **Expectation formation:** Gürkaynak, Sack, and Swanson (2005) showed FOMC statements have greater impact on long-term yields than rate changes themselves
+3. **Communication primacy:** Lucca and Trebbi (2009) found communication changes lead policy rate decisions by more than a year
+
+For HNB, the critical question is whether official voice is maintained or displaced during high-salience events such as:
+
+- ECB interest rate decisions
+- Euro transition milestones
+- Inflation announcements
+- Major policy communications
+
+## Event Attribution Framework
+
+We operationalize **voice share** as the proportion of total attention (REACH) captured by each actor type during defined event windows:
+
+$$\text{Voice Share}_i = \frac{\text{REACH}_i}{\sum_j \text{REACH}_j} \times 100$$
+
+**Event hijacking** occurs when non-institutional sources capture disproportionate attention during events that should feature institutional voice.
+
+| Metric | Definition | Interpretation |
+|--------|------------|----------------|
+| Voice Share | Actor REACH / Total REACH in window | Who dominates attention |
+| Voice Delta | Event Voice Share - Baseline Voice Share | Change during events |
+| Hijack Index | Media Voice Share / Institutional Voice Share | >1 = media dominates |
+| Response Rank | Publication order after event | Who responds first |
+
+```{r load-data}
+#| label: load-data
+
+hnb <- readRDS("C:/Users/lsikic/Dropbox/hnb.rds")
+setDT(hnb)
+
+hnb[, date := as.Date(DATE)]
+hnb[, year := year(date)]
+hnb[, month := month(date)]
+
+hnb[, period := fcase(
+  date < as.Date("2023-01-01"), "ERM II",
+  default = "Euro Era"
+)]
+hnb[, period := factor(period, levels = c("ERM II", "Euro Era"))]
+
+n_articles <- nrow(hnb)
+total_reach <- sum(hnb$REACH, na.rm = TRUE)
+
+cat("Data loaded:", n_articles, "articles\n")
+cat("Total REACH:", format(total_reach, big.mark = ","), "\n")
+```
+
+```{r actor-classification}
+#| label: actor-classification
+
+# =============================================================================
+# ACTOR CLASSIFICATION - SYNCHRONIZED WITH MAPS 1-8
+# =============================================================================
+
+manual_overrides <- list(
+  "HNB Official" = c(
+    "hnb.hr", "hrvatska narodna banka",
+    "hrvatska narodna banka / croatian national bank"
+  ),
+  "Financial Regulators" = c(
+    "hanfa.hr", "hanfa", "hrvatska agencija za nadzor financijskih usluga",
+    "fina.hr", "fina", "financijska agencija"
+  ),
+  "Government" = c(
+    "gov.hr", "vlada", "vlada republike hrvatske",
+    "ministarstvo financija", "sabor.hr"
+  ),
+  "Financial Media" = c(
+    "poslovni.hr", "poslovni dnevnik", "seebiz.eu", "seebiz",
+    "lider.media", "lidermedia.hr", "lider", "bloombergadria.com",
+    "bloomberg adria", "hrportfolio.hr", "privredni.hr"
+  ),
+  "Commercial Banks" = c(
+    "zaba.hr", "zagrebačka banka", "pbz.hr", "privredna banka zagreb",
+    "erste.hr", "erste banka", "hpb.hr", "hrvatska poštanska banka",
+    "otp banka", "raiffeisen", "addiko"
+  ),
+  "Academic/Expert" = c(
+    "eizg.hr", "ekonomski institut zagreb", "ijf.hr",
+    "institut za javne financije", "ekonomski fakultet"
+  )
+)
+
+general_media_sources <- c(
+  "index.hr", "index", "jutarnji.hr", "jutarnji", "jutarnji list",
+  "vecernji.hr", "vecernji", "večernji list",
+  "24sata.hr", "24sata", "slobodnadalmacija.hr", "slobodna dalmacija",
+  "novilist.hr", "novi list", "dnevnik.hr", "dnevnik",
+  "tportal.hr", "tportal", "telegram.hr", "telegram",
+  "net.hr", "rtl.hr", "rtl", "hrt.hr", "hrt",
+  "n1info.hr", "n1info.com", "n1", "nacional.hr", "nacional",
+  "direktno.hr", "direktno", "dnevno.hr", "dnevno"
+)
+
+classify_actor_hnb <- function(from_val, url_val = NA) {
+  from_lower <- tolower(trimws(as.character(from_val)))
+  url_lower <- tolower(ifelse(is.na(url_val), "", as.character(url_val)))
+  combined <- paste(from_lower, url_lower)
+  
+  match_any <- function(patterns, text, fixed = TRUE) {
+    any(sapply(patterns, function(p) grepl(p, text, fixed = fixed)))
+  }
+  
+  for (actor_type in names(manual_overrides)) {
+    if (match_any(manual_overrides[[actor_type]], from_lower)) {
+      return(actor_type)
+    }
+  }
+  
+  if (grepl("hnb\\.hr", url_lower) || grepl("hnb\\.hr", from_lower)) {
+    return("HNB Official")
+  }
+  
+  if (grepl("hanfa|fina\\.hr", combined)) {
+    return("Financial Regulators")
+  }
+  
+  if (grepl("gov\\.hr|vlada|ministarstvo", combined)) {
+    return("Government")
+  }
+  
+  bank_patterns <- c("banka", "bank", "zaba", "pbz", "erste", "hpb",
+                     "otp", "raiffeisen", "addiko", "sberbank")
+  if (match_any(bank_patterns, from_lower)) {
+    if (!grepl("narodna|hnb|central", from_lower)) {
+      return("Commercial Banks")
+    }
+  }
+  
+  financial_media_patterns <- c(
+    "poslovni", "seebiz", "lider", "bloomberg", "portfolio",
+    "privredni", "finance", "ekonom", "business", "capital"
+  )
+  if (match_any(financial_media_patterns, from_lower)) {
+    return("Financial Media")
+  }
+  
+  if (match_any(general_media_sources, from_lower)) {
+    return("General Media")
+  }
+  
+  news_patterns <- c("portal", "vijesti", "news", "info", "dnevni",
+                     "radio", "tv", ".hr")
+  if (match_any(news_patterns, from_lower)) {
+    return("General Media")
+  }
+  
+  return("Other")
+}
+
+hnb[, ACTOR_TYPE := mapply(classify_actor_hnb, FROM, URL)]
+hnb[, INSTITUTIONAL := ACTOR_TYPE %in% c("HNB Official", "Financial Regulators", "Government")]
+```
+
+# Analysis 9.1: Event Calendar Definition
+
+## Key Events in HNB Coverage Period
+
+```{r event-calendar}
+#| label: event-calendar
+
+# Define comprehensive event calendar
+events <- data.table(
+  Event = c(
+    # Euro Transition Events
+    "Euro Adoption Day",
+    "Conversion Rate Announcement",
+    "Euro Coins Presentation",
+    "Dual Display Start",
+    "ERM II Entry Anniversary",
+    "Final HRK Day",
+    
+    # ECB Policy Events
+    "ECB First Rate Hike 2022",
+    "ECB Large Rate Hike Sept 2022",
+    "ECB Rate Hike Oct 2022",
+    "ECB Rate Hike Dec 2022",
+    "ECB Rate Hike Feb 2023",
+    "ECB Rate Hike March 2023",
+    "ECB Rate Hike May 2023",
+    "ECB Rate Hike June 2023",
+    "ECB Rate Hike July 2023",
+    "ECB Rate Hike Sept 2023",
+    
+    # Inflation Events
+    "Croatia CPI Peak Oct 2022",
+    "Eurozone Inflation Peak",
+    "Croatia CPI Deceleration Start",
+    
+    # HNB Policy Events
+    "HNB Final Rate Decision",
+    "HNB Governor Statement Euro",
+    "HNB Annual Report 2021",
+    "HNB Annual Report 2022",
+    
+    # Banking Events
+    "Credit Suisse Crisis",
+    "SVB Collapse"
+  ),
+  Date = as.Date(c(
+    # Euro Transition
+    "2023-01-01",
+    "2022-07-12",
+    "2022-11-22",
+    "2022-09-05",
+    "2021-07-10",
+    "2022-12-31",
+    
+    # ECB Policy
+    "2022-07-21",
+    "2022-09-08",
+    "2022-10-27",
+    "2022-12-15",
+    "2023-02-02",
+    "2023-03-16",
+    "2023-05-04",
+    "2023-06-15",
+    "2023-07-27",
+    "2023-09-14",
+    
+    # Inflation
+    "2022-10-15",
+    "2022-10-31",
+    "2023-03-01",
+    
+    # HNB Policy
+    "2022-12-15",
+    "2022-06-01",
+    "2022-05-15",
+    "2023-05-15",
+    
+    # Banking
+    "2023-03-15",
+    "2023-03-10"
+  )),
+  Type = c(
+    rep("Euro Transition", 6),
+    rep("ECB Policy", 10),
+    rep("Inflation", 3),
+    rep("HNB Policy", 4),
+    rep("Banking", 2)
+  ),
+  Window_Days = c(
+    rep(7, 6),   # Euro events: 7 day window
+    rep(3, 10),  # ECB: 3 day window
+    rep(5, 3),   # Inflation: 5 day window
+    rep(5, 4),   # HNB: 5 day window
+    rep(5, 2)    # Banking: 5 day window
+  ),
+  Expected_Leader = c(
+    rep("HNB Official", 6),
+    rep("Financial Media", 10),
+    rep("Financial Media", 3),
+    rep("HNB Official", 4),
+    rep("Financial Media", 2)
+  )
+)
+
+# Filter to events within data range
+data_min <- min(hnb$date)
+data_max <- max(hnb$date)
+events <- events[Date >= data_min & Date <= data_max]
+
+cat("Event Calendar\n")
+cat("==============\n")
+cat("Total events defined:", nrow(events), "\n")
+cat("Event types:", paste(unique(events$Type), collapse = ", "), "\n")
+cat("Date range:", as.character(data_min), "to", as.character(data_max), "\n")
+
+events %>%
+  arrange(Date) %>%
+  mutate(
+    Date = as.character(Date),
+    Window = paste0("±", Window_Days, " days")
+  ) %>%
+  select(Event, Date, Type, Window, Expected_Leader) %>%
+  kable(col.names = c("Event", "Date", "Type", "Window", "Expected Voice Leader")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  scroll_box(height = "400px")
+```
+
+# Analysis 9.2: Baseline Voice Share
+
+## Overall Voice Share (Non-Event Periods)
+
+```{r baseline-voice}
+#| label: baseline-voice
+
+# Calculate baseline (all data)
+baseline_voice <- hnb[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE)
+), by = ACTOR_TYPE]
+
+baseline_voice[, `:=`(
+  Article_Share = Articles / sum(Articles) * 100,
+  REACH_Share = Total_REACH / sum(Total_REACH) * 100
+)]
+
+baseline_voice <- baseline_voice[order(-REACH_Share)]
+
+# Store for later comparison
+baseline_hnb_voice <- baseline_voice[ACTOR_TYPE == "HNB Official", REACH_Share]
+baseline_institutional_voice <- baseline_voice[ACTOR_TYPE %in% c("HNB Official", "Financial Regulators", "Government"), sum(REACH_Share)]
+baseline_media_voice <- baseline_voice[ACTOR_TYPE %in% c("Financial Media", "General Media"), sum(REACH_Share)]
+```
+
+## Baseline Voice Share Visualization
+
+```{r baseline-viz}
+#| label: baseline-viz
+#| fig-height: 7
+
+ggplot(baseline_voice[ACTOR_TYPE != "Other"], 
+       aes(x = reorder(ACTOR_TYPE, REACH_Share), y = REACH_Share, fill = ACTOR_TYPE)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = sprintf("%.1f%%", REACH_Share)), hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  scale_fill_manual(values = actor_colors) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Baseline Voice Share (Full Corpus)",
+    subtitle = "Share of total REACH by actor type",
+    x = NULL,
+    y = "Voice Share (% of REACH)",
+    caption = paste0("HNB Official: ", sprintf("%.1f%%", baseline_hnb_voice),
+                    " | Institutional Total: ", sprintf("%.1f%%", baseline_institutional_voice),
+                    " | Media Total: ", sprintf("%.1f%%", baseline_media_voice))
+  ) +
+  theme(legend.position = "none")
+```
+
+# Analysis 9.3: Event-Specific Voice Share
+
+## Calculate Voice Share for Each Event
+
+```{r event-voice}
+#| label: event-voice
+
+# Function to calculate voice share for an event window
+calculate_event_voice <- function(event_date, window_days) {
+  window_start <- event_date - window_days
+  window_end <- event_date + window_days
+  
+  event_data <- hnb[date >= window_start & date <= window_end]
+  
+  if (nrow(event_data) == 0) return(NULL)
+  
+  voice <- event_data[, .(
+    Articles = .N,
+    Total_REACH = sum(REACH, na.rm = TRUE)
+  ), by = ACTOR_TYPE]
+  
+  voice[, `:=`(
+    Article_Share = Articles / sum(Articles) * 100,
+    REACH_Share = Total_REACH / sum(Total_REACH) * 100
+  )]
+  
+  return(voice)
+}
+
+# Calculate voice share for all events
+event_voice_list <- list()
+
+for (i in 1:nrow(events)) {
+  voice <- calculate_event_voice(events$Date[i], events$Window_Days[i])
+  if (!is.null(voice)) {
+    voice[, Event := events$Event[i]]
+    voice[, Event_Type := events$Type[i]]
+    voice[, Event_Date := events$Date[i]]
+    event_voice_list[[i]] <- voice
+  }
+}
+
+event_voice <- rbindlist(event_voice_list)
+
+# Calculate HNB voice share for each event
+hnb_event_voice <- event_voice[ACTOR_TYPE == "HNB Official", .(
+  Event, Event_Type, Event_Date, 
+  HNB_Articles = Articles,
+  HNB_REACH = Total_REACH,
+  HNB_Voice_Share = REACH_Share
+)]
+
+# Add baseline comparison
+hnb_event_voice[, Baseline_Voice := baseline_hnb_voice]
+hnb_event_voice[, Voice_Delta := HNB_Voice_Share - Baseline_Voice]
+```
+
+## HNB Voice Share Across Events
+
+```{r hnb-voice-events}
+#| label: hnb-voice-events
+#| fig-height: 9
+
+ggplot(hnb_event_voice, aes(x = reorder(Event, HNB_Voice_Share), y = HNB_Voice_Share, fill = Event_Type)) +
+  geom_col(width = 0.7) +
+  geom_hline(yintercept = baseline_hnb_voice, linetype = "dashed", color = "#1a3c5a", linewidth = 1) +
+  geom_text(aes(label = sprintf("%.1f%%", HNB_Voice_Share)), hjust = -0.1, size = 3) +
+  coord_flip() +
+  scale_fill_manual(values = event_type_colors) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  annotate("text", x = 1, y = baseline_hnb_voice + 0.5,
+           label = paste0("Baseline: ", sprintf("%.1f%%", baseline_hnb_voice)),
+           hjust = 0, size = 3, color = "#1a3c5a") +
+  labs(
+    title = "HNB Official Voice Share by Event",
+    subtitle = "Dashed line = baseline voice share across full corpus",
+    x = NULL,
+    y = "HNB Voice Share (% of REACH)",
+    fill = "Event Type"
+  )
+```
+
+## Voice Delta Analysis
+
+```{r voice-delta}
+#| label: voice-delta
+#| fig-height: 8
+
+ggplot(hnb_event_voice, aes(x = reorder(Event, Voice_Delta), y = Voice_Delta, fill = Voice_Delta > 0)) +
+  geom_col(width = 0.7) +
+  geom_hline(yintercept = 0, color = "gray50") +
+  geom_text(aes(label = sprintf("%+.1f pp", Voice_Delta)), 
+            hjust = ifelse(hnb_event_voice[order(Voice_Delta)]$Voice_Delta > 0, -0.1, 1.1), 
+            size = 3) +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "#22c55e", "FALSE" = "#ef4444"),
+                    labels = c("TRUE" = "Gained Voice", "FALSE" = "Lost Voice")) +
+  labs(
+    title = "HNB Voice Change During Events vs Baseline",
+    subtitle = "Positive = HNB gained voice share; Negative = HNB lost voice share",
+    x = NULL,
+    y = "Voice Delta (percentage points)",
+    fill = NULL
+  ) +
+  theme(legend.position = "top")
+```
+
+## Event Voice Summary Table
+
+```{r event-voice-table}
+#| label: event-voice-table
+
+hnb_event_voice[order(Event_Date)] %>%
+  mutate(
+    Event_Date = as.character(Event_Date),
+    HNB_Articles = format(HNB_Articles, big.mark = ","),
+    HNB_REACH = format(HNB_REACH, big.mark = ","),
+    HNB_Voice_Share = sprintf("%.2f%%", HNB_Voice_Share),
+    Baseline_Voice = sprintf("%.2f%%", Baseline_Voice),
+    Voice_Delta = sprintf("%+.2f pp", Voice_Delta),
+    Performance = ifelse(as.numeric(gsub("[^0-9.-]", "", Voice_Delta)) > 0, "Above", "Below")
+  ) %>%
+  select(Event, Event_Type, Event_Date, HNB_Voice_Share, Voice_Delta, Performance) %>%
+  kable(col.names = c("Event", "Type", "Date", "HNB Voice", "Delta", "vs Baseline")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  scroll_box(height = "400px")
+```
+
+# Analysis 9.4: Event Hijacking Analysis
+
+## Who Captures Voice During Key Events?
+
+```{r event-hijacking}
+#| label: event-hijacking
+#| fig-height: 10
+
+# Calculate institutional vs media voice for each event
+inst_media_voice <- event_voice[, .(
+  Institutional_REACH = sum(Total_REACH[ACTOR_TYPE %in% c("HNB Official", "Financial Regulators", "Government")]),
+  Media_REACH = sum(Total_REACH[ACTOR_TYPE %in% c("Financial Media", "General Media")]),
+  Total_REACH = sum(Total_REACH)
+), by = .(Event, Event_Type, Event_Date)]
+
+inst_media_voice[, `:=`(
+  Institutional_Voice = Institutional_REACH / Total_REACH * 100,
+  Media_Voice = Media_REACH / Total_REACH * 100
+)]
+
+inst_media_voice[, Hijack_Index := Media_Voice / Institutional_Voice]
+
+# Add expected leader
+inst_media_voice <- merge(inst_media_voice, events[, .(Event, Expected_Leader)], by = "Event")
+
+# Determine if hijacked
+inst_media_voice[, Hijacked := (Expected_Leader == "HNB Official" & Hijack_Index > 2) |
+                               (Expected_Leader == "HNB Official" & Institutional_Voice < 10)]
+```
+
+## Hijack Index Visualization
+
+```{r hijack-viz}
+#| label: hijack-viz
+#| fig-height: 8
+
+ggplot(inst_media_voice, aes(x = reorder(Event, -Hijack_Index), y = Hijack_Index, fill = Hijacked)) +
+  geom_col(width = 0.7) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
+  geom_text(aes(label = sprintf("%.1fx", Hijack_Index)), vjust = -0.3, size = 3) +
+  scale_fill_manual(values = c("TRUE" = "#ef4444", "FALSE" = "#22c55e"),
+                    labels = c("TRUE" = "Hijacked", "FALSE" = "Not Hijacked")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Event Hijack Index",
+    subtitle = "Media Voice Share / Institutional Voice Share (>1 = media dominates)",
+    x = NULL,
+    y = "Hijack Index",
+    fill = "Status",
+    caption = "Events where HNB was expected to lead but media captured >2x attention are marked 'Hijacked'"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "top")
+```
+
+## Voice Composition by Event
+
+```{r voice-composition}
+#| label: voice-composition
+#| fig-height: 10
+
+# Prepare stacked bar data
+voice_composition <- inst_media_voice %>%
+  select(Event, Event_Type, Event_Date, Institutional_Voice, Media_Voice) %>%
+  pivot_longer(cols = c(Institutional_Voice, Media_Voice), 
+               names_to = "Category", values_to = "Voice_Share") %>%
+  mutate(Category = ifelse(Category == "Institutional_Voice", "Institutional", "Media"))
+
+ggplot(voice_composition, aes(x = reorder(Event, Event_Date), y = Voice_Share, fill = Category)) +
+  geom_col(width = 0.8) +
+  geom_hline(yintercept = 50, linetype = "dashed", color = "white", linewidth = 0.5) +
+  coord_flip() +
+  scale_fill_manual(values = c("Institutional" = "#1a3c5a", "Media" = "#e07b39")) +
+  labs(
+    title = "Voice Composition: Institutional vs Media by Event",
+    subtitle = "Who dominates the conversation during key events?",
+    x = NULL,
+    y = "Voice Share (%)",
+    fill = "Category"
+  ) +
+  theme(legend.position = "top")
+```
+
+# Analysis 9.5: Event Type Patterns
+
+## Voice Share by Event Type
+
+```{r event-type-voice}
+#| label: event-type-voice
+#| fig-height: 7
+
+event_type_voice <- event_voice[, .(
+  Events = uniqueN(Event),
+  Articles = sum(Articles),
+  Total_REACH = sum(Total_REACH)
+), by = .(Event_Type, ACTOR_TYPE)]
+
+event_type_voice[, Voice_Share := Total_REACH / sum(Total_REACH) * 100, by = Event_Type]
+
+# Focus on key actors
+key_actors <- c("HNB Official", "Financial Media", "General Media", "Government")
+event_type_key <- event_type_voice[ACTOR_TYPE %in% key_actors]
+
+ggplot(event_type_key, aes(x = Event_Type, y = Voice_Share, fill = ACTOR_TYPE)) +
+  geom_col(position = "dodge", width = 0.7) +
+  scale_fill_manual(values = actor_colors) +
+  labs(
+    title = "Voice Share by Event Type",
+    subtitle = "How does actor dominance vary across event categories?",
+    x = "Event Type",
+    y = "Voice Share (%)",
+    fill = "Actor Type"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "right")
+```
+
+## HNB Performance by Event Type
+
+```{r hnb-event-type}
+#| label: hnb-event-type
+
+hnb_by_type <- hnb_event_voice[, .(
+  Events = .N,
+  Mean_Voice_Share = mean(HNB_Voice_Share),
+  Mean_Delta = mean(Voice_Delta),
+  Events_Above_Baseline = sum(Voice_Delta > 0),
+  Events_Below_Baseline = sum(Voice_Delta < 0)
+), by = Event_Type]
+
+hnb_by_type %>%
+  mutate(
+    Mean_Voice_Share = sprintf("%.2f%%", Mean_Voice_Share),
+    Mean_Delta = sprintf("%+.2f pp", Mean_Delta),
+    Success_Rate = sprintf("%.0f%%", Events_Above_Baseline / Events * 100)
+  ) %>%
+  select(Event_Type, Events, Mean_Voice_Share, Mean_Delta, Events_Above_Baseline, Events_Below_Baseline, Success_Rate) %>%
+  kable(col.names = c("Event Type", "Events", "Mean Voice", "Mean Delta", 
+                      "Above Baseline", "Below Baseline", "Success Rate")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+# Analysis 9.6: High-Salience vs Normal Period Comparison
+
+## Define High-Salience Periods
+
+```{r salience-definition}
+#| label: salience-definition
+
+# Mark all dates within event windows as high-salience
+hnb[, High_Salience := FALSE]
+
+for (i in 1:nrow(events)) {
+  event_date <- events$Date[i]
+  window_days <- events$Window_Days[i]
+  hnb[date >= (event_date - window_days) & date <= (event_date + window_days), 
+      High_Salience := TRUE]
+}
+
+hnb[, Salience := ifelse(High_Salience, "High Salience", "Normal")]
+
+salience_summary <- hnb[, .(
+  Days = uniqueN(date),
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE)
+), by = Salience]
+
+salience_summary[, `:=`(
+  Articles_Per_Day = Articles / Days,
+  REACH_Per_Day = Total_REACH / Days
+)]
+
+salience_summary %>%
+  mutate(
+    Articles = format(Articles, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    Articles_Per_Day = sprintf("%.1f", Articles_Per_Day),
+    REACH_Per_Day = format(round(REACH_Per_Day, 0), big.mark = ",")
+  ) %>%
+  kable(col.names = c("Period Type", "Days", "Articles", "Total REACH", 
+                      "Articles/Day", "REACH/Day")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Voice Share Comparison: High-Salience vs Normal
+
+```{r salience-voice}
+#| label: salience-voice
+#| fig-height: 8
+
+salience_voice <- hnb[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE)
+), by = .(Salience, ACTOR_TYPE)]
+
+salience_voice[, Voice_Share := Total_REACH / sum(Total_REACH) * 100, by = Salience]
+
+# Compare key actors
+salience_key <- salience_voice[ACTOR_TYPE %in% key_actors]
+
+ggplot(salience_key, aes(x = ACTOR_TYPE, y = Voice_Share, fill = Salience)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_text(aes(label = sprintf("%.1f%%", Voice_Share)), 
+            position = position_dodge(width = 0.7), vjust = -0.3, size = 3) +
+  scale_fill_manual(values = salience_colors) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Voice Share: High-Salience Events vs Normal Periods",
+    subtitle = "Does HNB maintain voice when it matters most?",
+    x = NULL,
+    y = "Voice Share (%)",
+    fill = "Period"
+  ) +
+  theme(legend.position = "top")
+```
+
+## Voice Delta by Salience
+
+```{r salience-delta}
+#| label: salience-delta
+
+# Calculate voice delta between high-salience and normal
+salience_wide <- dcast(salience_voice, ACTOR_TYPE ~ Salience, value.var = "Voice_Share")
+setnames(salience_wide, c("High Salience", "Normal"), c("High_Salience", "Normal"))
+salience_wide[, Voice_Delta := High_Salience - Normal]
+
+salience_wide[ACTOR_TYPE %in% key_actors][order(-Voice_Delta)] %>%
+  mutate(
+    High_Salience = sprintf("%.2f%%", High_Salience),
+    Normal = sprintf("%.2f%%", Normal),
+    Voice_Delta = sprintf("%+.2f pp", Voice_Delta),
+    Effect = ifelse(as.numeric(gsub("[^0-9.-]", "", Voice_Delta)) > 0, 
+                    "Gains during events", "Loses during events")
+  ) %>%
+  kable(col.names = c("Actor Type", "High Salience", "Normal", "Delta", "Effect")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+# Analysis 9.7: Response Speed Analysis
+
+## Who Publishes First After Events?
+
+```{r response-speed}
+#| label: response-speed
+
+# For each event, find first responders on event day and day after
+first_responders <- data.table()
+
+for (i in 1:nrow(events)) {
+  event_date <- events$Date[i]
+  event_name <- events$Event[i]
+  
+  # Get articles on event day and day after
+  response_window <- hnb[date >= event_date & date <= event_date + 1]
+  
+  if (nrow(response_window) > 0) {
+    # Rank by date (and time if available)
+    response_window[, Response_Rank := frank(date, ties.method = "min")]
+    
+    # Get first responder per actor type
+    first_by_actor <- response_window[, .(
+      First_Response_Date = min(date),
+      Articles = .N,
+      Total_REACH = sum(REACH, na.rm = TRUE)
+    ), by = ACTOR_TYPE]
+    
+    first_by_actor[, `:=`(
+      Event = event_name,
+      Event_Date = event_date,
+      Response_Lag = as.integer(First_Response_Date - event_date)
+    )]
+    
+    first_responders <- rbind(first_responders, first_by_actor)
+  }
+}
+```
+
+## Response Speed by Actor Type
+
+```{r response-speed-viz}
+#| label: response-speed-viz
+#| fig-height: 7
+
+if (nrow(first_responders) > 0) {
+  response_summary <- first_responders[, .(
+    Events_Responded = .N,
+    Mean_Lag = mean(Response_Lag, na.rm = TRUE),
+    Same_Day_Responses = sum(Response_Lag == 0),
+    Total_First_Day_REACH = sum(Total_REACH[Response_Lag <= 1], na.rm = TRUE)
+  ), by = ACTOR_TYPE][order(Mean_Lag)]
+  
+  response_summary[, Same_Day_Rate := Same_Day_Responses / Events_Responded * 100]
+  
+  ggplot(response_summary[ACTOR_TYPE != "Other"], 
+         aes(x = reorder(ACTOR_TYPE, -Same_Day_Rate), y = Same_Day_Rate, fill = ACTOR_TYPE)) +
+    geom_col(width = 0.7) +
+    geom_text(aes(label = sprintf("%.0f%%", Same_Day_Rate)), vjust = -0.3, size = 3.5) +
+    scale_fill_manual(values = actor_colors) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15)), limits = c(0, 100)) +
+    labs(
+      title = "Same-Day Response Rate by Actor Type",
+      subtitle = "Who publishes on the event day?",
+      x = NULL,
+      y = "Same-Day Response Rate (%)"
+    ) +
+    theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1))
+}
+```
+
+## Response Speed Table
+
+```{r response-table}
+#| label: response-table
+
+if (nrow(first_responders) > 0) {
+  response_summary %>%
+    mutate(
+      Events_Responded = format(Events_Responded, big.mark = ","),
+      Mean_Lag = sprintf("%.1f days", Mean_Lag),
+      Same_Day_Rate = sprintf("%.0f%%", Same_Day_Rate),
+      Total_First_Day_REACH = format(Total_First_Day_REACH, big.mark = ",")
+    ) %>%
+    select(ACTOR_TYPE, Events_Responded, Mean_Lag, Same_Day_Rate, Total_First_Day_REACH) %>%
+    kable(col.names = c("Actor Type", "Events Covered", "Mean Lag", 
+                        "Same-Day Rate", "First-Day REACH")) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+}
+```
+
+# Analysis 9.8: Critical Event Deep Dive
+
+## Euro Adoption Day Analysis
+
+```{r euro-adoption}
+#| label: euro-adoption
+#| fig-height: 7
+
+euro_date <- as.Date("2023-01-01")
+euro_window <- hnb[date >= (euro_date - 7) & date <= (euro_date + 7)]
+
+if (nrow(euro_window) > 0) {
+  euro_voice <- euro_window[, .(
+    Articles = .N,
+    Total_REACH = sum(REACH, na.rm = TRUE)
+  ), by = ACTOR_TYPE]
+  
+  euro_voice[, Voice_Share := Total_REACH / sum(Total_REACH) * 100]
+  
+  ggplot(euro_voice[ACTOR_TYPE != "Other"], 
+         aes(x = reorder(ACTOR_TYPE, Voice_Share), y = Voice_Share, fill = ACTOR_TYPE)) +
+    geom_col(width = 0.7) +
+    geom_text(aes(label = sprintf("%.1f%%", Voice_Share)), hjust = -0.1, size = 3.5) +
+    coord_flip() +
+    scale_fill_manual(values = actor_colors) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+    labs(
+      title = "Voice Share During Euro Adoption (Dec 25, 2022 - Jan 8, 2023)",
+      subtitle = "Who dominated the most important transition event?",
+      x = NULL,
+      y = "Voice Share (%)"
+    ) +
+    theme(legend.position = "none")
+  
+  # HNB performance
+  hnb_euro_voice <- euro_voice[ACTOR_TYPE == "HNB Official", Voice_Share]
+  cat("\nEuro Adoption Day Analysis\n")
+  cat("==========================\n")
+  cat("HNB Official Voice Share:", sprintf("%.2f%%", hnb_euro_voice), "\n")
+  cat("Baseline Voice Share:", sprintf("%.2f%%", baseline_hnb_voice), "\n")
+  cat("Voice Delta:", sprintf("%+.2f pp", hnb_euro_voice - baseline_hnb_voice), "\n")
+}
+```
+
+## Daily Voice Trajectory Around Euro Adoption
+
+```{r euro-trajectory}
+#| label: euro-trajectory
+#| fig-height: 7
+
+if (nrow(euro_window) > 0) {
+  euro_daily <- euro_window[, .(
+    HNB_REACH = sum(REACH[ACTOR_TYPE == "HNB Official"], na.rm = TRUE),
+    Media_REACH = sum(REACH[ACTOR_TYPE %in% c("Financial Media", "General Media")], na.rm = TRUE),
+    Total_REACH = sum(REACH, na.rm = TRUE)
+  ), by = date]
+  
+  euro_daily[, `:=`(
+    HNB_Voice = HNB_REACH / Total_REACH * 100,
+    Media_Voice = Media_REACH / Total_REACH * 100,
+    Days_From_Euro = as.integer(date - euro_date)
+  )]
+  
+  euro_long <- euro_daily %>%
+    select(date, Days_From_Euro, HNB_Voice, Media_Voice) %>%
+    pivot_longer(cols = c(HNB_Voice, Media_Voice), names_to = "Actor", values_to = "Voice_Share") %>%
+    mutate(Actor = ifelse(Actor == "HNB_Voice", "HNB Official", "Media"))
+  
+  ggplot(euro_long, aes(x = Days_From_Euro, y = Voice_Share, color = Actor)) +
+    geom_line(linewidth = 1.2) +
+    geom_point(size = 2) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "#27ae60") +
+    annotate("text", x = 0.5, y = max(euro_long$Voice_Share, na.rm = TRUE) * 0.9,
+             label = "Euro Day", hjust = 0, color = "#27ae60", fontface = "bold") +
+    scale_color_manual(values = c("HNB Official" = "#1a3c5a", "Media" = "#e07b39")) +
+    labs(
+      title = "Daily Voice Share Around Euro Adoption",
+      subtitle = "HNB vs Media voice trajectory",
+      x = "Days from Euro Adoption",
+      y = "Voice Share (%)",
+      color = "Actor"
+    ) +
+    theme(legend.position = "top")
+}
+```
+
+# Summary and Key Findings
+
+## Event Attribution Summary
+
+```{r final-summary}
+#| label: final-summary
+
+# Calculate summary metrics
+events_above_baseline <- sum(hnb_event_voice$Voice_Delta > 0)
+events_below_baseline <- sum(hnb_event_voice$Voice_Delta < 0)
+mean_voice_delta <- mean(hnb_event_voice$Voice_Delta)
+events_hijacked <- sum(inst_media_voice$Hijacked, na.rm = TRUE)
+mean_hijack_index <- mean(inst_media_voice$Hijack_Index, na.rm = TRUE)
+
+tibble(
+  Finding = c(
+    "Events analyzed",
+    "HNB baseline voice share",
+    "Events where HNB exceeded baseline",
+    "Events where HNB fell below baseline",
+    "Mean voice delta during events",
+    "Events with media 'hijacking'",
+    "Mean hijack index",
+    "High-salience period coverage",
+    "HNB same-day response rate"
+  ),
+  Value = c(
+    nrow(events),
+    sprintf("%.2f%%", baseline_hnb_voice),
+    sprintf("%d (%.0f%%)", events_above_baseline, events_above_baseline/nrow(hnb_event_voice)*100),
+    sprintf("%d (%.0f%%)", events_below_baseline, events_below_baseline/nrow(hnb_event_voice)*100),
+    sprintf("%+.2f pp", mean_voice_delta),
+    sprintf("%d events", events_hijacked),
+    sprintf("%.1fx", mean_hijack_index),
+    sprintf("%.0f%% of days", sum(hnb$High_Salience)/nrow(hnb)*100),
+    if(nrow(response_summary) > 0) sprintf("%.0f%%", response_summary[ACTOR_TYPE == "HNB Official", Same_Day_Rate]) else "N/A"
+  )
+) %>%
+  kable(col.names = c("Finding", "Value")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Implications for HNB Communication Strategy
+
+**1. Event Performance Pattern**
+
+HNB Official voice share `r ifelse(mean_voice_delta > 0, "increases", "decreases")` by an average of `r sprintf("%.2f", abs(mean_voice_delta))` percentage points during key events compared to baseline. This `r ifelse(mean_voice_delta > 0, "suggests effective event communication", "indicates vulnerability during critical moments")`.
+
+**2. Media Dominance**
+
+With a mean hijack index of `r sprintf("%.1fx", mean_hijack_index)`, media sources capture `r sprintf("%.0f", mean_hijack_index)` times more attention than institutional sources during events. This confirms the intermediation challenge identified in Maps 5-7.
+
+**3. Event Type Vulnerabilities**
+
+`r hnb_by_type[which.min(Mean_Delta), Event_Type]` events show the largest HNB voice deficit (`r hnb_by_type[which.min(Mean_Delta), sprintf("%.2f pp", Mean_Delta)]`), suggesting targeted communication improvements for this category.
+
+**4. Response Speed**
+
+`r if(nrow(response_summary) > 0) sprintf("HNB Official achieves %.0f%% same-day response rate, %s Financial Media's %.0f%% rate.", response_summary[ACTOR_TYPE == "HNB Official", Same_Day_Rate], ifelse(response_summary[ACTOR_TYPE == "HNB Official", Same_Day_Rate] > response_summary[ACTOR_TYPE == "Financial Media", Same_Day_Rate], "exceeding", "trailing"), response_summary[ACTOR_TYPE == "Financial Media", Same_Day_Rate])`
+
+**5. Strategic Recommendations**
+
+- Pre-position communications before predictable events (ECB decisions, scheduled announcements)
+- Develop rapid response protocols for breaking events
+- Focus resources on event types with largest voice deficits
+- Build relationships with high-reach media for coordinated messaging during critical events
+
+---
+
+# Appendix: Methodological Notes
+
+## Voice Share Calculation
+
+$$\text{Voice Share}_i = \frac{\text{REACH}_i}{\sum_{j=1}^{n} \text{REACH}_j} \times 100$$
+
+Where $i$ is the actor type and $j$ indexes all actors in the event window.
+
+## Hijack Index
+
+$$\text{Hijack Index} = \frac{\text{Media Voice Share}}{\text{Institutional Voice Share}}$$
+
+- Index = 1: Equal voice
+- Index > 1: Media dominates
+- Index < 1: Institutional dominates
+
+An event is classified as "hijacked" when:
+
+1. HNB was the expected voice leader, AND
+2. Hijack Index > 2 (media has 2x+ attention), OR
+3. Institutional Voice Share < 10%
+
+## Event Window Definition
+
+Event windows vary by type:
+
+- Euro Transition: ±7 days (extended public interest)
+- ECB Policy: ±3 days (rapid market response)
+- Inflation: ±5 days (data interpretation period)
+- HNB Policy: ±5 days (domestic policy cycle)
+- Banking: ±5 days (crisis response period)
+
+```{r session-info}
+#| label: session-info
+
+sessionInfo()
+```

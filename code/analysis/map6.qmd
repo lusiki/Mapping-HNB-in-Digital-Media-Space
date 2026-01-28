@@ -1,0 +1,890 @@
+---
+title: "HNB DigiMedia Map 6: Source Concentration and Market Structure"
+subtitle: "Analyzing Attention Market Concentration and Gatekeeper Vulnerability"
+author: "HNB DigiMedia Project"
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    code-fold: true
+    code-summary: "Show code"
+    theme: cosmo
+    fig-width: 10
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(data.table)
+library(scales)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(viridis)
+library(lubridate)
+library(patchwork)
+library(ggrepel)
+library(ineq)  # For Gini coefficient
+
+theme_set(theme_minimal(base_size = 12) +
+          theme(
+            plot.title = element_text(face = "bold", size = 14),
+            plot.subtitle = element_text(color = "gray40"),
+            legend.position = "bottom"
+          ))
+
+# Color palette for actor types
+actor_colors <- c(
+  "HNB Official" = "#1a3c5a",
+  "Financial Regulators" = "#2c5f7c",
+  "Commercial Banks" = "#4a9c6d",
+  "Financial Media" = "#e07b39",
+  "General Media" = "#c44536",
+  "International Sources" = "#6b4c9a",
+  "Academic/Expert" = "#64748b",
+  "Political Actors" = "#eab308",
+  "Financial Influencers" = "#ec4899",
+  "Government" = "#0ea5e9",
+  "Other" = "#94a3b8"
+)
+
+# Period colors
+period_colors <- c(
+  "ERM II" = "#3498db",
+  "Euro Era" = "#27ae60"
+)
+
+# Concentration thresholds (DOJ/FTC guidelines adapted)
+hhi_thresholds <- c(
+  "Unconcentrated" = 1500,
+  "Moderately Concentrated" = 2500,
+  "Highly Concentrated" = 10000
+)
+```
+
+# Introduction
+
+This document presents **Map 6: Source Concentration and Market Structure Analysis** of the HNB DigiMedia project. The core question driving this analysis is:
+
+> **How concentrated is the attention market for HNB coverage, and does this concentration create systemic vulnerabilities for monetary policy communication?**
+
+## Theoretical Motivation
+
+The literature establishes that monetary policy works primarily through managing expectations (Woodford 2001). If a handful of media sources dominate public attention on central bank matters, then:
+
+1. **Gatekeeper dependency:** HNB communication effectiveness depends critically on how these gatekeepers frame content
+2. **Fragility risk:** Changes in gatekeeper behavior (editorial shifts, ownership changes, platform decline) could disrupt communication channels
+3. **Message distortion:** Concentrated intermediation increases opportunities for framing divergence from official messaging
+
+Morris and Shin (2002) showed that public information can crowd out private information when it receives "too much weight." In a concentrated attention market, dominant sources become de facto public signals that may override diverse interpretations.
+
+## Market Structure Framework
+
+We apply industrial organization concepts to the attention market:
+
+| Metric | Definition | Interpretation |
+|--------|------------|----------------|
+| Gini Coefficient | Inequality measure (0-1) | Higher = more concentrated |
+| HHI | Sum of squared market shares | >2500 = highly concentrated |
+| CR4 / CR10 | Top 4/10 concentration ratio | Share of top sources |
+| Power Law α | Zipf distribution exponent | Steeper = more inequality |
+
+```{r load-data}
+#| label: load-data
+
+hnb <- readRDS("C:/Users/lsikic/Dropbox/hnb.rds")
+setDT(hnb)
+
+hnb[, date := as.Date(DATE)]
+hnb[, year := year(date)]
+hnb[, month := month(date)]
+
+hnb[, period := fcase(
+  date < as.Date("2023-01-01"), "ERM II",
+  default = "Euro Era"
+)]
+hnb[, period := factor(period, levels = c("ERM II", "Euro Era"))]
+
+n_articles <- nrow(hnb)
+n_sources <- uniqueN(hnb$FROM)
+total_reach <- sum(hnb$REACH, na.rm = TRUE)
+
+cat("Data loaded:", n_articles, "articles from", n_sources, "sources\n")
+```
+
+```{r actor-classification}
+#| label: actor-classification
+
+# =============================================================================
+# ACTOR CLASSIFICATION - SYNCHRONIZED WITH MAPS 1-5
+# =============================================================================
+
+manual_overrides <- list(
+  "HNB Official" = c(
+    "hnb.hr", "hrvatska narodna banka",
+    "hrvatska narodna banka / croatian national bank"
+  ),
+  "Financial Regulators" = c(
+    "hanfa.hr", "hanfa", "hrvatska agencija za nadzor financijskih usluga",
+    "fina.hr", "fina", "financijska agencija"
+  ),
+  "Government" = c(
+    "gov.hr", "vlada", "vlada republike hrvatske",
+    "ministarstvo financija", "sabor.hr"
+  ),
+  "Financial Media" = c(
+    "poslovni.hr", "poslovni dnevnik", "seebiz.eu", "seebiz",
+    "lider.media", "lidermedia.hr", "lider", "bloombergadria.com",
+    "bloomberg adria", "hrportfolio.hr", "privredni.hr"
+  ),
+  "Commercial Banks" = c(
+    "zaba.hr", "zagrebačka banka", "pbz.hr", "privredna banka zagreb",
+    "erste.hr", "erste banka", "hpb.hr", "hrvatska poštanska banka",
+    "otp banka", "raiffeisen", "addiko"
+  ),
+  "Academic/Expert" = c(
+    "eizg.hr", "ekonomski institut zagreb", "ijf.hr",
+    "institut za javne financije", "ekonomski fakultet"
+  )
+)
+
+general_media_sources <- c(
+  "index.hr", "index", "jutarnji.hr", "jutarnji", "jutarnji list",
+  "vecernji.hr", "vecernji", "večernji list",
+  "24sata.hr", "24sata", "slobodnadalmacija.hr", "slobodna dalmacija",
+  "novilist.hr", "novi list", "dnevnik.hr", "dnevnik",
+  "tportal.hr", "tportal", "telegram.hr", "telegram",
+  "net.hr", "rtl.hr", "rtl", "hrt.hr", "hrt",
+  "n1info.hr", "n1info.com", "n1", "nacional.hr", "nacional",
+  "direktno.hr", "direktno", "dnevno.hr", "dnevno"
+)
+
+classify_actor_hnb <- function(from_val, url_val = NA) {
+  from_lower <- tolower(trimws(as.character(from_val)))
+  url_lower <- tolower(ifelse(is.na(url_val), "", as.character(url_val)))
+  combined <- paste(from_lower, url_lower)
+  
+  match_any <- function(patterns, text, fixed = TRUE) {
+    any(sapply(patterns, function(p) grepl(p, text, fixed = fixed)))
+  }
+  
+  for (actor_type in names(manual_overrides)) {
+    if (match_any(manual_overrides[[actor_type]], from_lower)) {
+      return(actor_type)
+    }
+  }
+  
+  if (grepl("hnb\\.hr", url_lower) || grepl("hnb\\.hr", from_lower)) {
+    return("HNB Official")
+  }
+  
+  if (grepl("hanfa|fina\\.hr", combined)) {
+    return("Financial Regulators")
+  }
+  
+  if (grepl("gov\\.hr|vlada|ministarstvo", combined)) {
+    return("Government")
+  }
+  
+  bank_patterns <- c("banka", "bank", "zaba", "pbz", "erste", "hpb",
+                     "otp", "raiffeisen", "addiko", "sberbank")
+  if (match_any(bank_patterns, from_lower)) {
+    if (!grepl("narodna|hnb|central", from_lower)) {
+      return("Commercial Banks")
+    }
+  }
+  
+  financial_media_patterns <- c(
+    "poslovni", "seebiz", "lider", "bloomberg", "portfolio",
+    "privredni", "finance", "ekonom", "business", "capital"
+  )
+  if (match_any(financial_media_patterns, from_lower)) {
+    return("Financial Media")
+  }
+  
+  if (match_any(general_media_sources, from_lower)) {
+    return("General Media")
+  }
+  
+  news_patterns <- c("portal", "vijesti", "news", "info", "dnevni",
+                     "radio", "tv", ".hr")
+  if (match_any(news_patterns, from_lower)) {
+    return("General Media")
+  }
+  
+  return("Other")
+}
+
+hnb[, ACTOR_TYPE := mapply(classify_actor_hnb, FROM, URL)]
+hnb[, INSTITUTIONAL := ACTOR_TYPE %in% c("HNB Official", "Financial Regulators", "Government")]
+```
+
+# Analysis 6.1: Overall Market Concentration
+
+## Source-Level Market Shares
+
+```{r source-shares}
+#| label: source-shares
+
+source_stats <- hnb[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE),
+  ACTOR_TYPE = first(ACTOR_TYPE),
+  Institutional = first(INSTITUTIONAL)
+), by = FROM][order(-Total_REACH)]
+
+source_stats[, `:=`(
+  Article_Share = Articles / sum(Articles) * 100,
+  REACH_Share = Total_REACH / sum(Total_REACH) * 100,
+  Rank = .I
+)]
+
+source_stats[, Cumulative_REACH_Share := cumsum(REACH_Share)]
+source_stats[, Cumulative_Article_Share := cumsum(Article_Share)]
+```
+
+## Concentration Metrics Summary
+
+```{r concentration-metrics}
+#| label: concentration-metrics
+
+# Gini coefficients
+gini_reach <- ineq(source_stats$Total_REACH, type = "Gini")
+gini_articles <- ineq(source_stats$Articles, type = "Gini")
+
+# HHI (Herfindahl-Hirschman Index) - using percentage shares squared, summed
+hhi_reach <- sum((source_stats$REACH_Share)^2)
+hhi_articles <- sum((source_stats$Article_Share)^2)
+
+# Concentration ratios
+cr1_reach <- source_stats[1, REACH_Share]
+cr4_reach <- sum(source_stats[1:min(4, nrow(source_stats)), REACH_Share])
+cr10_reach <- sum(source_stats[1:min(10, nrow(source_stats)), REACH_Share])
+cr20_reach <- sum(source_stats[1:min(20, nrow(source_stats)), REACH_Share])
+
+cr1_articles <- source_stats[1, Article_Share]
+cr4_articles <- sum(source_stats[1:min(4, nrow(source_stats)), Article_Share])
+cr10_articles <- sum(source_stats[1:min(10, nrow(source_stats)), Article_Share])
+cr20_articles <- sum(source_stats[1:min(20, nrow(source_stats)), Article_Share])
+
+# HHI classification
+hhi_class <- case_when(
+  hhi_reach < 1500 ~ "Unconcentrated",
+  hhi_reach < 2500 ~ "Moderately Concentrated",
+  TRUE ~ "Highly Concentrated"
+)
+
+tibble(
+  Metric = c(
+    "Number of Sources",
+    "Gini Coefficient (REACH)",
+    "Gini Coefficient (Articles)",
+    "HHI (REACH)",
+    "HHI (Articles)",
+    "HHI Classification",
+    "CR1 (Top Source REACH Share)",
+    "CR4 (Top 4 REACH Share)",
+    "CR10 (Top 10 REACH Share)",
+    "CR20 (Top 20 REACH Share)"
+  ),
+  Value = c(
+    format(n_sources, big.mark = ","),
+    sprintf("%.3f", gini_reach),
+    sprintf("%.3f", gini_articles),
+    sprintf("%.0f", hhi_reach),
+    sprintf("%.0f", hhi_articles),
+    hhi_class,
+    sprintf("%.1f%%", cr1_reach),
+    sprintf("%.1f%%", cr4_reach),
+    sprintf("%.1f%%", cr10_reach),
+    sprintf("%.1f%%", cr20_reach)
+  ),
+  Interpretation = c(
+    "Total unique publishers in corpus",
+    "0 = perfect equality, 1 = perfect inequality",
+    "0 = perfect equality, 1 = perfect inequality",
+    "<1500 unconcentrated, >2500 highly concentrated",
+    "<1500 unconcentrated, >2500 highly concentrated",
+    "Based on DOJ/FTC market concentration guidelines",
+    "Single source dominance",
+    "Oligopoly threshold (>60% = tight oligopoly)",
+    "Extended market concentration",
+    "Broad market concentration"
+  )
+) %>%
+  kable(col.names = c("Metric", "Value", "Interpretation")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Lorenz Curve: REACH Inequality
+
+```{r lorenz-curve}
+#| label: lorenz-curve
+#| fig-height: 7
+
+# Create Lorenz curve data
+lorenz_data <- source_stats[order(Total_REACH), .(
+  FROM, Total_REACH, Articles
+)]
+lorenz_data[, `:=`(
+  cum_sources = .I / .N * 100,
+  cum_reach = cumsum(Total_REACH) / sum(Total_REACH) * 100,
+  cum_articles = cumsum(Articles) / sum(Articles) * 100
+)]
+
+# Add origin point
+lorenz_plot <- rbind(
+  data.table(cum_sources = 0, cum_reach = 0, cum_articles = 0),
+  lorenz_data[, .(cum_sources, cum_reach, cum_articles)]
+)
+
+ggplot(lorenz_plot) +
+  geom_line(aes(x = cum_sources, y = cum_sources), 
+            linetype = "dashed", color = "gray50") +
+  geom_line(aes(x = cum_sources, y = cum_reach), 
+            color = "#e07b39", linewidth = 1.2) +
+  geom_line(aes(x = cum_sources, y = cum_articles), 
+            color = "#2c5f7c", linewidth = 1.2) +
+  geom_ribbon(aes(x = cum_sources, ymin = cum_reach, ymax = cum_sources),
+              fill = "#e07b39", alpha = 0.2) +
+  annotate("text", x = 70, y = 30, 
+           label = paste0("Gini (REACH) = ", sprintf("%.3f", gini_reach)),
+           color = "#e07b39", fontface = "bold", size = 4) +
+  annotate("text", x = 70, y = 45, 
+           label = paste0("Gini (Articles) = ", sprintf("%.3f", gini_articles)),
+           color = "#2c5f7c", fontface = "bold", size = 4) +
+  labs(
+    title = "Lorenz Curve: Attention Inequality in HNB Coverage",
+    subtitle = "Orange = REACH distribution, Blue = Article distribution, Dashed = Perfect equality",
+    x = "Cumulative % of Sources (ranked low to high)",
+    y = "Cumulative % of Total",
+    caption = "The further the curve from the diagonal, the greater the concentration"
+  ) +
+  coord_equal() +
+  scale_x_continuous(limits = c(0, 100)) +
+  scale_y_continuous(limits = c(0, 100))
+```
+
+## Cumulative Distribution
+
+```{r cumulative-distribution}
+#| label: cumulative-distribution
+#| fig-height: 6
+
+# How many sources needed for X% of REACH
+reach_50 <- source_stats[Cumulative_REACH_Share >= 50, .N][1]
+reach_80 <- source_stats[Cumulative_REACH_Share >= 80, .N][1]
+reach_90 <- source_stats[Cumulative_REACH_Share >= 90, .N][1]
+
+ggplot(source_stats[1:min(100, nrow(source_stats))], 
+       aes(x = Rank, y = Cumulative_REACH_Share)) +
+  geom_line(color = "#e07b39", linewidth = 1.2) +
+  geom_hline(yintercept = c(50, 80, 90), linetype = "dashed", color = "gray50", alpha = 0.7) +
+  geom_vline(xintercept = c(reach_50, reach_80, reach_90), 
+             linetype = "dotted", color = "#2c5f7c", alpha = 0.7) +
+  annotate("text", x = reach_50 + 2, y = 52, 
+           label = paste0(reach_50, " sources = 50%"), hjust = 0, size = 3) +
+  annotate("text", x = reach_80 + 2, y = 82, 
+           label = paste0(reach_80, " sources = 80%"), hjust = 0, size = 3) +
+  annotate("text", x = reach_90 + 2, y = 92, 
+           label = paste0(reach_90, " sources = 90%"), hjust = 0, size = 3) +
+  scale_y_continuous(limits = c(0, 100)) +
+  labs(
+    title = "Cumulative REACH Distribution",
+    subtitle = "How many sources account for X% of total attention?",
+    x = "Number of Sources (ranked by REACH)",
+    y = "Cumulative REACH Share (%)"
+  )
+```
+
+# Analysis 6.2: Attention Gatekeepers
+
+## Top 20 Sources by REACH
+
+```{r top-sources}
+#| label: top-sources
+#| fig-height: 9
+
+top20 <- source_stats[1:20]
+
+ggplot(top20, aes(x = reorder(FROM, Total_REACH), y = Total_REACH, fill = ACTOR_TYPE)) +
+  geom_col(width = 0.8) +
+  geom_text(aes(label = sprintf("%.1f%%", REACH_Share)), hjust = -0.1, size = 3) +
+  coord_flip() +
+  scale_fill_manual(values = actor_colors) +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Top 20 Attention Gatekeepers",
+    subtitle = "Sources with highest total REACH in HNB coverage",
+    x = NULL,
+    y = "Total REACH",
+    fill = "Actor Type"
+  )
+```
+
+## Gatekeeper Profile Table
+
+```{r gatekeeper-table}
+#| label: gatekeeper-table
+
+top20 %>%
+  mutate(
+    Articles = format(Articles, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    Mean_REACH = format(round(Mean_REACH, 0), big.mark = ","),
+    Article_Share = sprintf("%.2f%%", Article_Share),
+    REACH_Share = sprintf("%.2f%%", REACH_Share),
+    Cumulative_REACH_Share = sprintf("%.1f%%", Cumulative_REACH_Share),
+    Institutional = ifelse(Institutional, "Yes", "No")
+  ) %>%
+  select(Rank, FROM, ACTOR_TYPE, Institutional, Articles, Article_Share, 
+         REACH_Share, Cumulative_REACH_Share, Mean_REACH) %>%
+  kable(col.names = c("Rank", "Source", "Actor Type", "Inst.", "Articles", 
+                      "Article %", "REACH %", "Cumul. %", "Mean REACH")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  scroll_box(height = "500px")
+```
+
+## Gatekeeper Concentration by Actor Type
+
+```{r gatekeeper-actor}
+#| label: gatekeeper-actor
+#| fig-height: 6
+
+# What actor types dominate the top 20?
+top20_actor <- top20[, .(
+  Sources = .N,
+  Total_REACH = sum(Total_REACH),
+  REACH_Share = sum(REACH_Share)
+), by = ACTOR_TYPE][order(-REACH_Share)]
+
+ggplot(top20_actor, aes(x = reorder(ACTOR_TYPE, REACH_Share), y = REACH_Share, fill = ACTOR_TYPE)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = sprintf("%.1f%% (%d)", REACH_Share, Sources)), hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  scale_fill_manual(values = actor_colors) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+  labs(
+    title = "Actor Type Composition of Top 20 Gatekeepers",
+    subtitle = "Which actor types control the attention gates?",
+    x = NULL,
+    y = "Combined REACH Share (%)",
+    caption = "Numbers show REACH share and count of sources in top 20"
+  ) +
+  theme(legend.position = "none")
+```
+
+# Analysis 6.3: Power Law Analysis
+
+Media attention markets often follow power law distributions where a few sources dominate while most have minimal reach. We test whether HNB coverage follows this pattern.
+
+## Rank-Size Distribution (Zipf Plot)
+
+```{r zipf-plot}
+#| label: zipf-plot
+#| fig-height: 7
+
+# Log-log plot for power law detection
+source_stats[, log_rank := log10(Rank)]
+source_stats[, log_reach := log10(Total_REACH + 1)]
+
+# Fit linear model on log-log scale
+zipf_model <- lm(log_reach ~ log_rank, data = source_stats[Total_REACH > 0])
+zipf_alpha <- -coef(zipf_model)[2]  # Zipf exponent (negative of slope)
+zipf_r2 <- summary(zipf_model)$r.squared
+
+ggplot(source_stats[Total_REACH > 0], aes(x = log_rank, y = log_reach)) +
+  geom_point(alpha = 0.5, color = "#2c5f7c") +
+  geom_smooth(method = "lm", se = TRUE, color = "#e07b39", fill = "#e07b39", alpha = 0.2) +
+  annotate("text", x = max(source_stats$log_rank) * 0.7, y = max(source_stats$log_reach) * 0.9,
+           label = paste0("Zipf α = ", sprintf("%.2f", zipf_alpha), "\nR² = ", sprintf("%.3f", zipf_r2)),
+           hjust = 0, size = 4, fontface = "bold") +
+  labs(
+    title = "Power Law Test: Rank-Size Distribution",
+    subtitle = "Log-log plot tests whether REACH follows Zipf's law",
+    x = "Log10(Rank)",
+    y = "Log10(REACH)",
+    caption = "Linear relationship on log-log scale indicates power law; α > 1 indicates high concentration"
+  )
+```
+
+## Power Law Interpretation
+
+```{r power-law-interpretation}
+#| label: power-law-interpretation
+
+cat("Power Law Analysis Results\n")
+cat("==========================\n")
+cat("Zipf exponent (α):", sprintf("%.2f", zipf_alpha), "\n")
+cat("R-squared:", sprintf("%.3f", zipf_r2), "\n")
+cat("\nInterpretation:\n")
+if (zipf_r2 > 0.8) {
+  cat("- Strong power law fit (R² > 0.8)\n")
+} else if (zipf_r2 > 0.6) {
+  cat("- Moderate power law fit (R² 0.6-0.8)\n")
+} else {
+  cat("- Weak power law fit (R² < 0.6)\n")
+}
+
+if (zipf_alpha > 1.5) {
+  cat("- Very high concentration (α > 1.5): Winner-take-most dynamics\n")
+} else if (zipf_alpha > 1) {
+  cat("- High concentration (α > 1): Top sources dominate significantly\n")
+} else {
+  cat("- Moderate concentration (α ≤ 1): More distributed attention\n")
+}
+
+cat("\nImplication for HNB communication:\n")
+if (zipf_alpha > 1 && zipf_r2 > 0.7) {
+  cat("The attention market follows predictable power law dynamics.\n")
+  cat("A small number of gatekeepers will consistently dominate reach.\n")
+  cat("Strategic relationships with top sources are critical.\n")
+}
+```
+
+# Analysis 6.4: Period Comparison
+
+## Concentration Changes: ERM II vs Euro Era
+
+```{r period-concentration}
+#| label: period-concentration
+
+# Calculate concentration metrics by period
+period_concentration <- hnb[, {
+  source_period <- .SD[, .(Total_REACH = sum(REACH, na.rm = TRUE)), by = FROM][order(-Total_REACH)]
+  source_period[, REACH_Share := Total_REACH / sum(Total_REACH) * 100]
+  
+  list(
+    Sources = uniqueN(FROM),
+    Gini = ineq(source_period$Total_REACH, type = "Gini"),
+    HHI = sum(source_period$REACH_Share^2),
+    CR4 = sum(source_period$REACH_Share[1:min(4, .N)]),
+    CR10 = sum(source_period$REACH_Share[1:min(10, .N)]),
+    Top_Source = source_period$FROM[1],
+    Top_Source_Share = source_period$REACH_Share[1]
+  )
+}, by = period]
+
+period_concentration %>%
+  mutate(
+    Sources = format(Sources, big.mark = ","),
+    Gini = sprintf("%.3f", Gini),
+    HHI = sprintf("%.0f", HHI),
+    CR4 = sprintf("%.1f%%", CR4),
+    CR10 = sprintf("%.1f%%", CR10),
+    Top_Source_Share = sprintf("%.1f%%", Top_Source_Share)
+  ) %>%
+  kable(col.names = c("Period", "Sources", "Gini", "HHI", "CR4", "CR10", 
+                      "Top Source", "Top Source %")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Concentration Trend Visualization
+
+```{r concentration-trend}
+#| label: concentration-trend
+#| fig-height: 6
+
+period_conc_long <- period_concentration %>%
+  select(period, Gini, CR4, CR10) %>%
+  mutate(CR4 = CR4 / 100, CR10 = CR10 / 100) %>%  # Normalize to 0-1 scale
+  pivot_longer(cols = -period, names_to = "Metric", values_to = "Value")
+
+ggplot(period_conc_long, aes(x = period, y = Value, fill = Metric)) +
+  geom_col(position = "dodge", width = 0.6) +
+  geom_text(aes(label = sprintf("%.2f", Value)), 
+            position = position_dodge(width = 0.6), vjust = -0.3, size = 3.5) +
+  scale_fill_manual(values = c("Gini" = "#1a3c5a", "CR4" = "#e07b39", "CR10" = "#4a9c6d")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15)), limits = c(0, 1)) +
+  labs(
+    title = "Concentration Metrics by Period",
+    subtitle = "Did euro adoption change market concentration?",
+    x = "Period",
+    y = "Concentration Index (0-1 scale)",
+    fill = "Metric"
+  ) +
+  theme(legend.position = "top")
+```
+
+# Analysis 6.5: Gatekeeper Stability
+
+## Do the Same Sources Dominate Across Periods?
+
+```{r gatekeeper-stability}
+#| label: gatekeeper-stability
+
+# Get top 20 sources in each period
+top_erm2 <- hnb[period == "ERM II", .(Total_REACH = sum(REACH, na.rm = TRUE)), by = FROM][order(-Total_REACH)][1:20]
+top_euro <- hnb[period == "Euro Era", .(Total_REACH = sum(REACH, na.rm = TRUE)), by = FROM][order(-Total_REACH)][1:20]
+
+# Calculate overlap
+overlap_sources <- intersect(top_erm2$FROM, top_euro$FROM)
+overlap_pct <- length(overlap_sources) / 20 * 100
+
+# Rank correlation
+both_periods <- merge(
+  top_erm2[, .(FROM, REACH_ERM2 = Total_REACH, Rank_ERM2 = .I)],
+  top_euro[, .(FROM, REACH_Euro = Total_REACH, Rank_Euro = .I)],
+  by = "FROM", all = TRUE
+)
+
+# Spearman correlation for overlapping sources
+overlap_data <- both_periods[!is.na(Rank_ERM2) & !is.na(Rank_Euro)]
+if (nrow(overlap_data) >= 3) {
+  rank_cor <- cor(overlap_data$Rank_ERM2, overlap_data$Rank_Euro, method = "spearman")
+} else {
+  rank_cor <- NA
+}
+
+cat("Gatekeeper Stability Analysis\n")
+cat("=============================\n")
+cat("Top 20 overlap between periods:", length(overlap_sources), "sources\n")
+cat("Overlap percentage:", sprintf("%.0f%%", overlap_pct), "\n")
+cat("Rank correlation (Spearman):", ifelse(is.na(rank_cor), "N/A", sprintf("%.2f", rank_cor)), "\n")
+cat("\nOverlapping gatekeepers:\n")
+for (s in overlap_sources) {
+  cat("  -", s, "\n")
+}
+```
+
+## Gatekeeper Movement Visualization
+
+```{r gatekeeper-movement}
+#| label: gatekeeper-movement
+#| fig-height: 8
+
+# Prepare data for bump chart style visualization
+movement_data <- merge(
+  top_erm2[, .(FROM, Rank_ERM2 = .I)],
+  top_euro[, .(FROM, Rank_Euro = .I)],
+  by = "FROM", all = TRUE
+)
+movement_data[is.na(Rank_ERM2), Rank_ERM2 := 25]  # New entrants
+movement_data[is.na(Rank_Euro), Rank_Euro := 25]   # Dropped out
+
+movement_data[, Movement := Rank_ERM2 - Rank_Euro]  # Positive = improved
+movement_data[, Status := fcase(
+  Rank_ERM2 == 25, "New in Euro Era",
+  Rank_Euro == 25, "Dropped from Top 20",
+  abs(Movement) <= 3, "Stable",
+  Movement > 0, "Improved",
+  Movement < 0, "Declined"
+)]
+
+# Show sources with biggest movements
+movement_data[order(-abs(Movement))][1:15] %>%
+  mutate(
+    Rank_ERM2 = ifelse(Rank_ERM2 == 25, "Not in Top 20", as.character(Rank_ERM2)),
+    Rank_Euro = ifelse(Rank_Euro == 25, "Not in Top 20", as.character(Rank_Euro)),
+    Movement = sprintf("%+d", Movement)
+  ) %>%
+  kable(col.names = c("Source", "Rank (ERM II)", "Rank (Euro Era)", "Movement", "Status"),
+        caption = "Gatekeeper Position Changes") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+# Analysis 6.6: Fragility Assessment
+
+## What If Top Gatekeepers Shift Coverage?
+
+This analysis quantifies the fragility of the attention ecosystem. If top sources changed their HNB coverage behavior, how much attention would be affected?
+
+```{r fragility-analysis}
+#| label: fragility-analysis
+#| fig-height: 7
+
+# Calculate concentration at different thresholds
+fragility_data <- data.table(
+  Top_N = c(1, 3, 5, 10, 20, 50),
+  REACH_Share = sapply(c(1, 3, 5, 10, 20, 50), function(n) {
+    sum(source_stats$REACH_Share[1:min(n, nrow(source_stats))])
+  }),
+  Article_Share = sapply(c(1, 3, 5, 10, 20, 50), function(n) {
+    sum(source_stats$Article_Share[1:min(n, nrow(source_stats))])
+  })
+)
+
+fragility_data[, Sources_Pct := Top_N / n_sources * 100]
+
+fragility_long <- fragility_data %>%
+  pivot_longer(cols = c(REACH_Share, Article_Share), 
+               names_to = "Metric", values_to = "Share") %>%
+  mutate(Metric = ifelse(Metric == "REACH_Share", "REACH", "Articles"))
+
+ggplot(fragility_long, aes(x = factor(Top_N), y = Share, fill = Metric)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_text(aes(label = sprintf("%.0f%%", Share)), 
+            position = position_dodge(width = 0.7), vjust = -0.3, size = 3) +
+  scale_fill_manual(values = c("REACH" = "#e07b39", "Articles" = "#2c5f7c")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15)), limits = c(0, 100)) +
+  labs(
+    title = "Fragility Analysis: Concentration at Different Thresholds",
+    subtitle = "What share do the top N sources control?",
+    x = "Number of Top Sources",
+    y = "Share of Total (%)",
+    fill = "Metric"
+  ) +
+  theme(legend.position = "top")
+```
+
+## Fragility Summary Table
+
+```{r fragility-table}
+#| label: fragility-table
+
+fragility_data %>%
+  mutate(
+    `% of All Sources` = sprintf("%.1f%%", Sources_Pct),
+    `REACH Share` = sprintf("%.1f%%", REACH_Share),
+    `Article Share` = sprintf("%.1f%%", Article_Share),
+    `Concentration Ratio` = sprintf("%.1fx", REACH_Share / Article_Share)
+  ) %>%
+  select(Top_N, `% of All Sources`, `Article Share`, `REACH Share`, `Concentration Ratio`) %>%
+  kable(col.names = c("Top N Sources", "% of All Sources", "Article Share", 
+                      "REACH Share", "REACH/Article Ratio"),
+        caption = "How concentrated is attention at different thresholds?") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## HNB Position in Market Structure
+
+```{r hnb-position}
+#| label: hnb-position
+
+# Where does HNB Official rank?
+hnb_rank <- source_stats[ACTOR_TYPE == "HNB Official", Rank][1]
+hnb_reach_share <- source_stats[ACTOR_TYPE == "HNB Official", REACH_Share][1]
+hnb_article_share <- source_stats[ACTOR_TYPE == "HNB Official", Article_Share][1]
+
+# How many non-institutional sources rank above HNB?
+sources_above_hnb <- source_stats[Rank < hnb_rank]
+media_above_hnb <- sources_above_hnb[ACTOR_TYPE %in% c("Financial Media", "General Media")]
+
+cat("HNB Official Position in Market Structure\n")
+cat("==========================================\n")
+cat("HNB Official rank:", hnb_rank, "of", n_sources, "sources\n")
+cat("HNB REACH share:", sprintf("%.2f%%", hnb_reach_share), "\n")
+cat("HNB Article share:", sprintf("%.2f%%", hnb_article_share), "\n")
+cat("\nSources ranking above HNB Official:", nrow(sources_above_hnb), "\n")
+cat("  - Media sources above HNB:", nrow(media_above_hnb), "\n")
+cat("\nThese", nrow(sources_above_hnb), "sources capture",
+    sprintf("%.1f%%", sum(sources_above_hnb$REACH_Share)), "of total REACH\n")
+```
+
+# Summary and Key Findings
+
+## Market Structure Summary
+
+```{r final-summary}
+#| label: final-summary
+
+tibble(
+  Finding = c(
+    "Total sources in ecosystem",
+    "Gini coefficient (REACH)",
+    "HHI classification",
+    "Top source REACH share",
+    "Top 4 sources REACH share",
+    "Top 10 sources REACH share",
+    "Sources needed for 50% REACH",
+    "Sources needed for 80% REACH",
+    "Power law exponent (α)",
+    "Gatekeeper stability (overlap %)",
+    "HNB Official rank",
+    "HNB Official REACH share"
+  ),
+  Value = c(
+    format(n_sources, big.mark = ","),
+    sprintf("%.3f", gini_reach),
+    hhi_class,
+    sprintf("%.1f%%", cr1_reach),
+    sprintf("%.1f%%", cr4_reach),
+    sprintf("%.1f%%", cr10_reach),
+    as.character(reach_50),
+    as.character(reach_80),
+    sprintf("%.2f", zipf_alpha),
+    sprintf("%.0f%%", overlap_pct),
+    as.character(hnb_rank),
+    sprintf("%.2f%%", hnb_reach_share)
+  )
+) %>%
+  kable(col.names = c("Finding", "Value")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Implications for HNB Communication Strategy
+
+Based on the concentration analysis:
+
+**1. Gatekeeper Dependency**
+
+The `r sprintf("%.1f%%", cr4_reach)` CR4 ratio indicates that `r ifelse(cr4_reach > 60, "a tight oligopoly", ifelse(cr4_reach > 40, "a loose oligopoly", "a competitive market"))` controls HNB coverage attention. This means:
+
+- Strategic relationships with top `r min(4, reach_50)` sources are critical
+- Editorial decisions at these outlets disproportionately affect HNB message reach
+- Diversification of media relationships reduces single-point-of-failure risk
+
+**2. Fragility Risk**
+
+With `r reach_50` sources controlling 50% of attention:
+
+- The attention market is `r ifelse(reach_50 < 5, "highly fragile", ifelse(reach_50 < 10, "moderately fragile", "relatively resilient"))`
+- Ownership changes, editorial shifts, or platform decline at top sources could significantly disrupt communication channels
+- Building redundancy through multiple high-reach relationships is advisable
+
+**3. Power Law Dynamics**
+
+The Zipf exponent of `r sprintf("%.2f", zipf_alpha)` indicates:
+
+- `r ifelse(zipf_alpha > 1, "Winner-take-most dynamics where top sources will consistently dominate", "More distributed attention patterns")`
+- Marginal sources have minimal impact regardless of content quality
+- Resources should focus on high-reach channels rather than broad distribution
+
+**4. Structural Position**
+
+HNB Official ranks #`r hnb_rank` with `r sprintf("%.2f%%", hnb_reach_share)` REACH share, meaning:
+
+- `r nrow(sources_above_hnb)` sources capture more attention than official HNB communication
+- Direct communication competes with `r sprintf("%.0f", nrow(media_above_hnb))` media sources for visibility
+- The attention gap (Map 5) is structurally embedded in market concentration
+
+---
+
+# Appendix: Methodological Notes
+
+## Concentration Metrics
+
+**Gini Coefficient:** Measures inequality on a 0-1 scale. For n sources with shares $x_i$:
+$$G = \frac{\sum_{i=1}^{n}\sum_{j=1}^{n}|x_i - x_j|}{2n\sum_{i=1}^{n}x_i}$$
+
+**HHI (Herfindahl-Hirschman Index):** Sum of squared percentage market shares:
+$$HHI = \sum_{i=1}^{n}s_i^2$$
+
+Where $s_i$ is the percentage market share of source $i$. Range: 0 to 10,000.
+
+**Concentration Ratios (CR):** Sum of market shares for top N sources.
+
+**Zipf Exponent:** From regression of log(REACH) on log(Rank): $\log(REACH) = \alpha - \beta \log(Rank)$
+
+## DOJ/FTC Guidelines (adapted)
+
+- HHI < 1,500: Unconcentrated market
+- HHI 1,500-2,500: Moderately concentrated
+- HHI > 2,500: Highly concentrated
+
+```{r session-info}
+#| label: session-info
+
+sessionInfo()
+```

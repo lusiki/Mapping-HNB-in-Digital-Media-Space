@@ -1,0 +1,1000 @@
+---
+title: "HNB DigiMedia Map 7: Content Amplification Chains"
+subtitle: "Tracing How Official Communication Propagates Through the Media Ecosystem"
+author: "HNB DigiMedia Project"
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    code-fold: true
+    code-summary: "Show code"
+    theme: cosmo
+    fig-width: 10
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(data.table)
+library(scales)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(viridis)
+library(lubridate)
+library(patchwork)
+library(ggrepel)
+library(stringdist)  # For text similarity
+
+theme_set(theme_minimal(base_size = 12) +
+          theme(
+            plot.title = element_text(face = "bold", size = 14),
+            plot.subtitle = element_text(color = "gray40"),
+            legend.position = "bottom"
+          ))
+
+# Color palette for actor types
+actor_colors <- c(
+  "HNB Official" = "#1a3c5a",
+  "Financial Regulators" = "#2c5f7c",
+  "Commercial Banks" = "#4a9c6d",
+  "Financial Media" = "#e07b39",
+  "General Media" = "#c44536",
+  "International Sources" = "#6b4c9a",
+  "Academic/Expert" = "#64748b",
+  "Political Actors" = "#eab308",
+  "Financial Influencers" = "#ec4899",
+  "Government" = "#0ea5e9",
+  "Other" = "#94a3b8"
+)
+
+# Period colors
+period_colors <- c(
+  "ERM II" = "#3498db",
+  "Euro Era" = "#27ae60"
+)
+
+# Lag category colors
+lag_colors <- c(
+  "Same day" = "#22c55e",
+  "1 day" = "#84cc16",
+  "2-3 days" = "#eab308",
+  "4-7 days" = "#f97316",
+  "8+ days" = "#ef4444"
+)
+```
+
+# Introduction
+
+This document presents **Map 7: Content Amplification Chains** of the HNB DigiMedia project. The core question driving this analysis is:
+
+> **When HNB publishes official communication, how does it propagate through the media ecosystem, and where does message transformation occur?**
+
+## Theoretical Motivation
+
+The literature establishes a critical finding: Coibion, Gorodnichenko, and Weber (2022) found that reading FOMC statements has "about the same average effect on expectations as simply being told the Fed's inflation target" while news articles had half that effect. This suggests:
+
+1. **Amplification matters:** Media intermediation determines whether official communication reaches the public
+2. **Transformation risk:** Each amplification step introduces potential message distortion
+3. **Timing dynamics:** Speed of amplification affects policy transmission
+
+Understanding the amplification chain reveals:
+
+- How quickly media responds to HNB publications
+- Which sources serve as primary amplifiers vs secondary echo chambers
+- Whether amplification preserves or transforms the original message
+- The multiplication factor between official publication and total ecosystem REACH
+
+## Amplification Framework
+
+We conceptualize the amplification chain as:
+
+```
+HNB Official Publication → Primary Amplifiers → Secondary Echo → Long-tail Coverage
+     (Day 0)                  (Day 0-1)           (Day 2-3)        (Day 4+)
+```
+
+| Stage | Definition | Characteristics |
+|-------|------------|-----------------|
+| Source | HNB Official publication | Authoritative, technical, low REACH |
+| Primary Amplifier | Coverage within 24 hours | News breaking, high REACH potential |
+| Secondary Echo | Coverage 2-3 days after | Analysis, commentary, opinion |
+| Long-tail | Coverage 4+ days after | Background reference, archival |
+
+```{r load-data}
+#| label: load-data
+
+hnb <- readRDS("C:/Users/lsikic/Dropbox/hnb.rds")
+setDT(hnb)
+
+hnb[, date := as.Date(DATE)]
+hnb[, year := year(date)]
+hnb[, month := month(date)]
+
+hnb[, period := fcase(
+  date < as.Date("2023-01-01"), "ERM II",
+  default = "Euro Era"
+)]
+hnb[, period := factor(period, levels = c("ERM II", "Euro Era"))]
+
+n_articles <- nrow(hnb)
+n_sources <- uniqueN(hnb$FROM)
+
+cat("Data loaded:", n_articles, "articles from", n_sources, "sources\n")
+```
+
+```{r actor-classification}
+#| label: actor-classification
+
+# =============================================================================
+# ACTOR CLASSIFICATION - SYNCHRONIZED WITH MAPS 1-6
+# =============================================================================
+
+manual_overrides <- list(
+  "HNB Official" = c(
+    "hnb.hr", "hrvatska narodna banka",
+    "hrvatska narodna banka / croatian national bank"
+  ),
+  "Financial Regulators" = c(
+    "hanfa.hr", "hanfa", "hrvatska agencija za nadzor financijskih usluga",
+    "fina.hr", "fina", "financijska agencija"
+  ),
+  "Government" = c(
+    "gov.hr", "vlada", "vlada republike hrvatske",
+    "ministarstvo financija", "sabor.hr"
+  ),
+  "Financial Media" = c(
+    "poslovni.hr", "poslovni dnevnik", "seebiz.eu", "seebiz",
+    "lider.media", "lidermedia.hr", "lider", "bloombergadria.com",
+    "bloomberg adria", "hrportfolio.hr", "privredni.hr"
+  ),
+  "Commercial Banks" = c(
+    "zaba.hr", "zagrebačka banka", "pbz.hr", "privredna banka zagreb",
+    "erste.hr", "erste banka", "hpb.hr", "hrvatska poštanska banka",
+    "otp banka", "raiffeisen", "addiko"
+  ),
+  "Academic/Expert" = c(
+    "eizg.hr", "ekonomski institut zagreb", "ijf.hr",
+    "institut za javne financije", "ekonomski fakultet"
+  )
+)
+
+general_media_sources <- c(
+  "index.hr", "index", "jutarnji.hr", "jutarnji", "jutarnji list",
+  "vecernji.hr", "vecernji", "večernji list",
+  "24sata.hr", "24sata", "slobodnadalmacija.hr", "slobodna dalmacija",
+  "novilist.hr", "novi list", "dnevnik.hr", "dnevnik",
+  "tportal.hr", "tportal", "telegram.hr", "telegram",
+  "net.hr", "rtl.hr", "rtl", "hrt.hr", "hrt",
+  "n1info.hr", "n1info.com", "n1", "nacional.hr", "nacional",
+  "direktno.hr", "direktno", "dnevno.hr", "dnevno"
+)
+
+classify_actor_hnb <- function(from_val, url_val = NA) {
+  from_lower <- tolower(trimws(as.character(from_val)))
+  url_lower <- tolower(ifelse(is.na(url_val), "", as.character(url_val)))
+  combined <- paste(from_lower, url_lower)
+  
+  match_any <- function(patterns, text, fixed = TRUE) {
+    any(sapply(patterns, function(p) grepl(p, text, fixed = fixed)))
+  }
+  
+  for (actor_type in names(manual_overrides)) {
+    if (match_any(manual_overrides[[actor_type]], from_lower)) {
+      return(actor_type)
+    }
+  }
+  
+  if (grepl("hnb\\.hr", url_lower) || grepl("hnb\\.hr", from_lower)) {
+    return("HNB Official")
+  }
+  
+  if (grepl("hanfa|fina\\.hr", combined)) {
+    return("Financial Regulators")
+  }
+  
+  if (grepl("gov\\.hr|vlada|ministarstvo", combined)) {
+    return("Government")
+  }
+  
+  bank_patterns <- c("banka", "bank", "zaba", "pbz", "erste", "hpb",
+                     "otp", "raiffeisen", "addiko", "sberbank")
+  if (match_any(bank_patterns, from_lower)) {
+    if (!grepl("narodna|hnb|central", from_lower)) {
+      return("Commercial Banks")
+    }
+  }
+  
+  financial_media_patterns <- c(
+    "poslovni", "seebiz", "lider", "bloomberg", "portfolio",
+    "privredni", "finance", "ekonom", "business", "capital"
+  )
+  if (match_any(financial_media_patterns, from_lower)) {
+    return("Financial Media")
+  }
+  
+  if (match_any(general_media_sources, from_lower)) {
+    return("General Media")
+  }
+  
+  news_patterns <- c("portal", "vijesti", "news", "info", "dnevni",
+                     "radio", "tv", ".hr")
+  if (match_any(news_patterns, from_lower)) {
+    return("General Media")
+  }
+  
+  return("Other")
+}
+
+hnb[, ACTOR_TYPE := mapply(classify_actor_hnb, FROM, URL)]
+hnb[, INSTITUTIONAL := ACTOR_TYPE %in% c("HNB Official", "Financial Regulators", "Government")]
+```
+
+# Analysis 7.1: HNB Publication Patterns
+
+## Identifying HNB Official Publications
+
+```{r hnb-publications}
+#| label: hnb-publications
+
+# Extract HNB Official publications
+hnb_official <- hnb[ACTOR_TYPE == "HNB Official"]
+
+cat("HNB Official Publications\n")
+cat("=========================\n")
+cat("Total HNB publications:", nrow(hnb_official), "\n")
+cat("Date range:", as.character(min(hnb_official$date)), "to", as.character(max(hnb_official$date)), "\n")
+cat("Total REACH:", format(sum(hnb_official$REACH, na.rm = TRUE), big.mark = ","), "\n")
+
+# Publication frequency
+hnb_daily <- hnb_official[, .(Publications = .N), by = date]
+cat("Days with publications:", nrow(hnb_daily), "\n")
+cat("Mean publications per active day:", sprintf("%.1f", mean(hnb_daily$Publications)), "\n")
+```
+
+## HNB Publication Timeline
+
+```{r hnb-timeline}
+#| label: hnb-timeline
+#| fig-height: 6
+
+hnb_monthly <- hnb_official[, .(
+  Publications = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE)
+), by = .(year, month)]
+
+hnb_monthly[, date_month := as.Date(paste(year, month, "01", sep = "-"))]
+
+ggplot(hnb_monthly, aes(x = date_month, y = Publications)) +
+  geom_col(fill = "#1a3c5a", alpha = 0.8) +
+  geom_smooth(method = "loess", se = TRUE, color = "#e07b39", fill = "#e07b39", alpha = 0.2) +
+  geom_vline(xintercept = as.Date("2023-01-01"), linetype = "dashed", color = "#27ae60") +
+  scale_x_date(date_labels = "%Y-%m", date_breaks = "3 months") +
+  labs(
+    title = "HNB Official Publication Volume Over Time",
+    subtitle = "Monthly count of official HNB publications",
+    x = NULL,
+    y = "Publications"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+# Analysis 7.2: Amplification Response Time
+
+## Media Response Lag Analysis
+
+For each day with HNB publications, we measure how quickly media sources respond.
+
+```{r response-lag}
+#| label: response-lag
+
+# Get dates when HNB published
+hnb_pub_dates <- unique(hnb_official$date)
+
+# For each HNB publication date, find media coverage in following days
+amplification_data <- data.table()
+
+for (pub_date in hnb_pub_dates) {
+  pub_date <- as.Date(pub_date, origin = "1970-01-01")
+  
+  # Get media coverage in 0-14 day window after HNB publication
+  window_coverage <- hnb[ACTOR_TYPE != "HNB Official" & 
+                          date >= pub_date & 
+                          date <= pub_date + 14]
+  
+  if (nrow(window_coverage) > 0) {
+    window_coverage[, `:=`(
+      HNB_Pub_Date = pub_date,
+      Lag_Days = as.integer(date - pub_date)
+    )]
+    
+    amplification_data <- rbind(amplification_data, window_coverage)
+  }
+}
+
+# Categorize lag
+amplification_data[, Lag_Category := fcase(
+  Lag_Days == 0, "Same day",
+  Lag_Days == 1, "1 day",
+  Lag_Days <= 3, "2-3 days",
+  Lag_Days <= 7, "4-7 days",
+  default = "8+ days"
+)]
+
+amplification_data[, Lag_Category := factor(Lag_Category, 
+                                            levels = c("Same day", "1 day", "2-3 days", "4-7 days", "8+ days"))]
+
+cat("Amplification Analysis\n")
+cat("======================\n")
+cat("HNB publication days analyzed:", length(hnb_pub_dates), "\n")
+cat("Total media articles in response windows:", nrow(amplification_data), "\n")
+```
+
+## Response Time Distribution
+
+```{r response-distribution}
+#| label: response-distribution
+#| fig-height: 7
+
+lag_summary <- amplification_data[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE),
+  Sources = uniqueN(FROM)
+), by = Lag_Category]
+
+lag_summary[, `:=`(
+  Article_Share = Articles / sum(Articles) * 100,
+  REACH_Share = Total_REACH / sum(Total_REACH) * 100
+)]
+
+p1 <- ggplot(lag_summary, aes(x = Lag_Category, y = Articles, fill = Lag_Category)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = format(Articles, big.mark = ",")), vjust = -0.3, size = 3.5) +
+  scale_fill_manual(values = lag_colors) +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Media Response Volume by Lag",
+    x = "Response Time",
+    y = "Number of Articles"
+  ) +
+  theme(legend.position = "none")
+
+p2 <- ggplot(lag_summary, aes(x = Lag_Category, y = Total_REACH, fill = Lag_Category)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = format(Total_REACH, big.mark = ",")), vjust = -0.3, size = 3) +
+  scale_fill_manual(values = lag_colors) +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "REACH Captured by Lag",
+    x = "Response Time",
+    y = "Total REACH"
+  ) +
+  theme(legend.position = "none")
+
+p1 + p2
+```
+
+## Response Time Summary Table
+
+```{r lag-table}
+#| label: lag-table
+
+lag_summary %>%
+  mutate(
+    Articles = format(Articles, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    Mean_REACH = format(round(Mean_REACH, 0), big.mark = ","),
+    Sources = format(Sources, big.mark = ","),
+    Article_Share = sprintf("%.1f%%", Article_Share),
+    REACH_Share = sprintf("%.1f%%", REACH_Share)
+  ) %>%
+  kable(col.names = c("Response Time", "Articles", "Total REACH", "Mean REACH",
+                      "Sources", "Article %", "REACH %")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Cumulative Amplification Curve
+
+```{r cumulative-amplification}
+#| label: cumulative-amplification
+#| fig-height: 6
+
+# Daily cumulative amplification
+daily_amp <- amplification_data[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE)
+), by = Lag_Days][order(Lag_Days)]
+
+daily_amp[, `:=`(
+  Cumulative_Articles = cumsum(Articles),
+  Cumulative_REACH = cumsum(Total_REACH)
+)]
+
+daily_amp[, `:=`(
+  Cumulative_Article_Pct = Cumulative_Articles / sum(Articles) * 100,
+  Cumulative_REACH_Pct = Cumulative_REACH / sum(Total_REACH) * 100
+)]
+
+ggplot(daily_amp, aes(x = Lag_Days)) +
+  geom_line(aes(y = Cumulative_Article_Pct, color = "Articles"), linewidth = 1.2) +
+  geom_line(aes(y = Cumulative_REACH_Pct, color = "REACH"), linewidth = 1.2) +
+  geom_hline(yintercept = c(50, 80), linetype = "dashed", color = "gray50", alpha = 0.7) +
+  scale_color_manual(values = c("Articles" = "#2c5f7c", "REACH" = "#e07b39")) +
+  scale_x_continuous(breaks = 0:14) +
+  scale_y_continuous(limits = c(0, 100)) +
+  labs(
+    title = "Cumulative Amplification Over Time",
+    subtitle = "How quickly does coverage accumulate after HNB publication?",
+    x = "Days After HNB Publication",
+    y = "Cumulative Percentage (%)",
+    color = "Metric"
+  ) +
+  theme(legend.position = "top")
+```
+
+# Analysis 7.3: Primary Amplifiers
+
+## Who Responds First?
+
+Sources that consistently publish within 24 hours of HNB communication serve as primary amplifiers.
+
+```{r primary-amplifiers}
+#| label: primary-amplifiers
+#| fig-height: 9
+
+# Primary amplifiers = same day or next day response
+primary_amp <- amplification_data[Lag_Days <= 1]
+
+primary_sources <- primary_amp[, .(
+  Fast_Responses = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE),
+  Response_Days = uniqueN(HNB_Pub_Date),
+  ACTOR_TYPE = first(ACTOR_TYPE)
+), by = FROM][order(-Fast_Responses)]
+
+primary_sources[, Response_Rate := Response_Days / length(hnb_pub_dates) * 100]
+
+# Top 20 primary amplifiers
+top_primary <- primary_sources[1:min(20, nrow(primary_sources))]
+
+ggplot(top_primary, aes(x = reorder(FROM, Fast_Responses), y = Fast_Responses, fill = ACTOR_TYPE)) +
+  geom_col(width = 0.8) +
+  geom_text(aes(label = Fast_Responses), hjust = -0.1, size = 3) +
+  coord_flip() +
+  scale_fill_manual(values = actor_colors) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Top 20 Primary Amplifiers",
+    subtitle = "Sources with most same-day or next-day responses to HNB publications",
+    x = NULL,
+    y = "Fast Response Articles (0-1 day lag)",
+    fill = "Actor Type"
+  )
+```
+
+## Primary Amplifier Profiles
+
+```{r primary-table}
+#| label: primary-table
+
+primary_sources[1:min(20, nrow(primary_sources))] %>%
+  mutate(
+    Fast_Responses = format(Fast_Responses, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    Mean_REACH = format(round(Mean_REACH, 0), big.mark = ","),
+    Response_Rate = sprintf("%.0f%%", Response_Rate)
+  ) %>%
+  select(FROM, ACTOR_TYPE, Fast_Responses, Response_Days, Response_Rate, Total_REACH, Mean_REACH) %>%
+  kable(col.names = c("Source", "Actor Type", "Fast Responses", "Active Days",
+                      "Response Rate", "Total REACH", "Mean REACH"),
+        caption = "Top 20 Primary Amplifiers (0-1 day response)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  scroll_box(height = "500px")
+```
+
+## Amplifier Actor Type Composition
+
+```{r amplifier-composition}
+#| label: amplifier-composition
+#| fig-height: 7
+
+# Compare actor type composition by response speed
+amp_by_actor <- amplification_data[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE)
+), by = .(ACTOR_TYPE, Lag_Category)]
+
+amp_by_actor[, `:=`(
+  Article_Share = Articles / sum(Articles) * 100,
+  REACH_Share = Total_REACH / sum(Total_REACH) * 100
+), by = Lag_Category]
+
+ggplot(amp_by_actor[ACTOR_TYPE != "Other"], 
+       aes(x = Lag_Category, y = Article_Share, fill = ACTOR_TYPE)) +
+  geom_col(position = "stack", width = 0.7) +
+  scale_fill_manual(values = actor_colors) +
+  labs(
+    title = "Actor Type Composition by Response Speed",
+    subtitle = "Who dominates at each stage of amplification?",
+    x = "Response Time",
+    y = "Share of Articles (%)",
+    fill = "Actor Type"
+  ) +
+  theme(legend.position = "right")
+```
+
+# Analysis 7.4: Amplification Multiplier
+
+## REACH Multiplication Effect
+
+For every unit of REACH from HNB Official, how much total ecosystem REACH is generated?
+
+```{r amplification-multiplier}
+#| label: amplification-multiplier
+
+# Total HNB Official REACH
+hnb_reach <- sum(hnb_official$REACH, na.rm = TRUE)
+
+# Total media REACH in response windows
+media_reach <- sum(amplification_data$REACH, na.rm = TRUE)
+
+# Amplification multiplier
+amplification_multiplier <- media_reach / hnb_reach
+
+# By time window
+multiplier_by_lag <- lag_summary[, .(
+  Lag_Category,
+  REACH = Total_REACH,
+  Multiplier = Total_REACH / hnb_reach
+)]
+
+cat("Amplification Multiplier Analysis\n")
+cat("==================================\n")
+cat("HNB Official total REACH:", format(hnb_reach, big.mark = ","), "\n")
+cat("Media ecosystem REACH (0-14 days):", format(media_reach, big.mark = ","), "\n")
+cat("Overall amplification multiplier:", sprintf("%.1fx", amplification_multiplier), "\n")
+cat("\nThis means for every 1 unit of HNB Official REACH,\n")
+cat("the media ecosystem generates", sprintf("%.1f", amplification_multiplier), "additional units.\n")
+```
+
+## Multiplier by Response Time
+
+```{r multiplier-chart}
+#| label: multiplier-chart
+#| fig-height: 6
+
+multiplier_by_lag[, Cumulative_Multiplier := cumsum(Multiplier)]
+
+ggplot(multiplier_by_lag, aes(x = Lag_Category, y = Multiplier, fill = Lag_Category)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = sprintf("%.1fx", Multiplier)), vjust = -0.3, size = 4) +
+  scale_fill_manual(values = lag_colors) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Amplification Multiplier by Response Time",
+    subtitle = "Media REACH generated relative to HNB Official REACH",
+    x = "Response Time",
+    y = "Multiplier (Media REACH / HNB REACH)"
+  ) +
+  theme(legend.position = "none")
+```
+
+## Multiplier Summary
+
+```{r multiplier-table}
+#| label: multiplier-table
+
+multiplier_by_lag %>%
+  mutate(
+    REACH = format(REACH, big.mark = ","),
+    Multiplier = sprintf("%.2fx", Multiplier),
+    Cumulative_Multiplier = sprintf("%.2fx", Cumulative_Multiplier)
+  ) %>%
+  kable(col.names = c("Response Time", "Media REACH", "Multiplier", "Cumulative Multiplier")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+# Analysis 7.5: Content Similarity Analysis
+
+## Title/Headline Comparison
+
+Do media headlines preserve or transform HNB messaging? We analyze textual similarity between HNB titles and subsequent media coverage.
+
+```{r title-similarity}
+#| label: title-similarity
+
+# Sample HNB publications with clear titles
+hnb_titles <- hnb_official[!is.na(TITLE) & nchar(TITLE) > 20, .(date, TITLE, REACH)]
+setnames(hnb_titles, "TITLE", "HNB_TITLE")
+
+# For each HNB publication, find media articles on same/next day
+similarity_data <- data.table()
+
+for (i in 1:min(100, nrow(hnb_titles))) {  # Sample for performance
+  pub_date <- hnb_titles$date[i]
+  hnb_title <- hnb_titles$HNB_TITLE[i]
+  
+  # Get same-day and next-day media coverage
+  media_coverage <- hnb[ACTOR_TYPE != "HNB Official" & 
+                         date >= pub_date & 
+                         date <= pub_date + 1 &
+                         !is.na(TITLE) & nchar(TITLE) > 20]
+  
+  if (nrow(media_coverage) > 0) {
+    # Calculate Jaccard similarity for titles
+    for (j in 1:nrow(media_coverage)) {
+      media_title <- media_coverage$TITLE[j]
+      
+      # Tokenize and calculate Jaccard similarity
+      hnb_tokens <- unique(tolower(unlist(strsplit(hnb_title, "\\s+"))))
+      media_tokens <- unique(tolower(unlist(strsplit(media_title, "\\s+"))))
+      
+      intersection <- length(intersect(hnb_tokens, media_tokens))
+      union <- length(union(hnb_tokens, media_tokens))
+      jaccard <- intersection / union
+      
+      similarity_data <- rbind(similarity_data, data.table(
+        HNB_Date = pub_date,
+        HNB_Title = hnb_title,
+        Media_Source = media_coverage$FROM[j],
+        Media_Title = media_title,
+        Media_ACTOR = media_coverage$ACTOR_TYPE[j],
+        Media_REACH = media_coverage$REACH[j],
+        Jaccard_Similarity = jaccard,
+        Lag_Days = as.integer(media_coverage$date[j] - pub_date)
+      ))
+    }
+  }
+}
+
+if (nrow(similarity_data) > 0) {
+  cat("Title Similarity Analysis\n")
+  cat("=========================\n")
+  cat("HNB-Media title pairs analyzed:", nrow(similarity_data), "\n")
+  cat("Mean Jaccard similarity:", sprintf("%.3f", mean(similarity_data$Jaccard_Similarity)), "\n")
+  cat("Median Jaccard similarity:", sprintf("%.3f", median(similarity_data$Jaccard_Similarity)), "\n")
+}
+```
+
+## Similarity Distribution
+
+```{r similarity-distribution}
+#| label: similarity-distribution
+#| fig-height: 6
+
+if (nrow(similarity_data) > 0) {
+  ggplot(similarity_data, aes(x = Jaccard_Similarity)) +
+    geom_histogram(bins = 30, fill = "#2c5f7c", color = "white", alpha = 0.8) +
+    geom_vline(xintercept = mean(similarity_data$Jaccard_Similarity), 
+               linetype = "dashed", color = "#e07b39", linewidth = 1) +
+    annotate("text", x = mean(similarity_data$Jaccard_Similarity) + 0.05, y = Inf,
+             label = paste0("Mean = ", sprintf("%.3f", mean(similarity_data$Jaccard_Similarity))),
+             vjust = 2, hjust = 0, color = "#e07b39", fontface = "bold") +
+    labs(
+      title = "Distribution of Title Similarity (HNB vs Media)",
+      subtitle = "Jaccard similarity: 0 = no overlap, 1 = identical",
+      x = "Jaccard Similarity Score",
+      y = "Number of Title Pairs"
+    )
+}
+```
+
+## Similarity by Actor Type
+
+```{r similarity-by-actor}
+#| label: similarity-by-actor
+#| fig-height: 6
+
+if (nrow(similarity_data) > 0) {
+  similarity_by_actor <- similarity_data[, .(
+    Mean_Similarity = mean(Jaccard_Similarity),
+    Median_Similarity = median(Jaccard_Similarity),
+    SD_Similarity = sd(Jaccard_Similarity),
+    Articles = .N,
+    Mean_REACH = mean(Media_REACH, na.rm = TRUE)
+  ), by = Media_ACTOR][order(-Mean_Similarity)]
+  
+  ggplot(similarity_by_actor[Articles >= 10], 
+         aes(x = reorder(Media_ACTOR, Mean_Similarity), y = Mean_Similarity, fill = Media_ACTOR)) +
+    geom_col(width = 0.7) +
+    geom_errorbar(aes(ymin = Mean_Similarity - SD_Similarity/sqrt(Articles),
+                      ymax = Mean_Similarity + SD_Similarity/sqrt(Articles)),
+                  width = 0.2) +
+    geom_text(aes(label = sprintf("%.3f", Mean_Similarity)), hjust = -0.1, size = 3.5) +
+    coord_flip() +
+    scale_fill_manual(values = actor_colors) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+    labs(
+      title = "Title Similarity by Actor Type",
+      subtitle = "Which actor types most closely mirror HNB headlines?",
+      x = NULL,
+      y = "Mean Jaccard Similarity",
+      caption = "Higher values = more similar to HNB titles (minimum 10 articles)"
+    ) +
+    theme(legend.position = "none")
+}
+```
+
+## High vs Low Similarity Examples
+
+```{r similarity-examples}
+#| label: similarity-examples
+
+if (nrow(similarity_data) > 0) {
+  # High similarity examples
+  high_sim <- similarity_data[order(-Jaccard_Similarity)][1:min(10, nrow(similarity_data))]
+  
+  cat("Examples of HIGH Similarity (preserving HNB framing):\n")
+  cat("=====================================================\n\n")
+  
+  for (i in 1:min(5, nrow(high_sim))) {
+    cat("Similarity:", sprintf("%.3f", high_sim$Jaccard_Similarity[i]), "\n")
+    cat("HNB:", substr(high_sim$HNB_Title[i], 1, 80), "...\n")
+    cat("Media:", substr(high_sim$Media_Title[i], 1, 80), "...\n")
+    cat("Source:", high_sim$Media_Source[i], "\n\n")
+  }
+  
+  # Low similarity examples (possible transformation)
+  low_sim <- similarity_data[Jaccard_Similarity > 0][order(Jaccard_Similarity)][1:min(10, nrow(similarity_data))]
+  
+  cat("\nExamples of LOW Similarity (potential reframing):\n")
+  cat("==================================================\n\n")
+  
+  for (i in 1:min(5, nrow(low_sim))) {
+    cat("Similarity:", sprintf("%.3f", low_sim$Jaccard_Similarity[i]), "\n")
+    cat("HNB:", substr(low_sim$HNB_Title[i], 1, 80), "...\n")
+    cat("Media:", substr(low_sim$Media_Title[i], 1, 80), "...\n")
+    cat("Source:", low_sim$Media_Source[i], "\n\n")
+  }
+}
+```
+
+# Analysis 7.6: Period Comparison
+
+## Amplification Dynamics: ERM II vs Euro Era
+
+```{r period-amplification}
+#| label: period-amplification
+#| fig-height: 7
+
+amplification_data[, period := fcase(
+  HNB_Pub_Date < as.Date("2023-01-01"), "ERM II",
+  default = "Euro Era"
+)]
+
+period_amp <- amplification_data[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE),
+  Sources = uniqueN(FROM)
+), by = .(period, Lag_Category)]
+
+period_amp[, Article_Share := Articles / sum(Articles) * 100, by = period]
+
+ggplot(period_amp, aes(x = Lag_Category, y = Article_Share, fill = period)) +
+  geom_col(position = "dodge", width = 0.7) +
+  scale_fill_manual(values = period_colors) +
+  labs(
+    title = "Response Time Distribution by Period",
+    subtitle = "Did amplification speed change with euro adoption?",
+    x = "Response Time",
+    y = "Share of Articles (%)",
+    fill = "Period"
+  ) +
+  theme(legend.position = "top")
+```
+
+## Period Amplification Metrics
+
+```{r period-amp-table}
+#| label: period-amp-table
+
+# HNB REACH by period
+hnb_reach_period <- hnb_official[, .(HNB_REACH = sum(REACH, na.rm = TRUE)), by = period]
+
+# Media REACH by period
+media_reach_period <- amplification_data[, .(
+  Media_REACH = sum(REACH, na.rm = TRUE),
+  Articles = .N,
+  Fast_Response_Pct = sum(Lag_Days <= 1) / .N * 100
+), by = period]
+
+period_multiplier <- merge(hnb_reach_period, media_reach_period, by = "period")
+period_multiplier[, Multiplier := Media_REACH / HNB_REACH]
+
+period_multiplier %>%
+  mutate(
+    HNB_REACH = format(HNB_REACH, big.mark = ","),
+    Media_REACH = format(Media_REACH, big.mark = ","),
+    Articles = format(Articles, big.mark = ","),
+    Fast_Response_Pct = sprintf("%.1f%%", Fast_Response_Pct),
+    Multiplier = sprintf("%.1fx", Multiplier)
+  ) %>%
+  kable(col.names = c("Period", "HNB REACH", "Media REACH", "Articles",
+                      "Fast Response %", "Multiplier")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+# Analysis 7.7: Amplification Network
+
+## Source-to-Source Amplification Patterns
+
+Which sources most consistently amplify HNB content?
+
+```{r amplification-network}
+#| label: amplification-network
+#| fig-height: 8
+
+# Sources that most frequently respond to HNB publications
+source_response <- amplification_data[, .(
+  Total_Responses = .N,
+  Fast_Responses = sum(Lag_Days <= 1),
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_Lag = mean(Lag_Days),
+  Response_Days = uniqueN(HNB_Pub_Date),
+  ACTOR_TYPE = first(ACTOR_TYPE)
+), by = FROM][order(-Total_Responses)]
+
+source_response[, `:=`(
+  Fast_Response_Rate = Fast_Responses / Total_Responses * 100,
+  Coverage_Rate = Response_Days / length(hnb_pub_dates) * 100
+)]
+
+# Top 30 most responsive sources
+top_responsive <- source_response[1:min(30, nrow(source_response))]
+
+ggplot(top_responsive, aes(x = Coverage_Rate, y = Fast_Response_Rate, 
+                           size = Total_REACH, color = ACTOR_TYPE)) +
+  geom_point(alpha = 0.7) +
+  geom_text_repel(aes(label = ifelse(Total_REACH > quantile(Total_REACH, 0.7), FROM, "")),
+                  size = 2.5, max.overlaps = 15) +
+  scale_size_continuous(labels = comma, range = c(2, 12)) +
+  scale_color_manual(values = actor_colors) +
+  labs(
+    title = "Amplification Network: Coverage vs Speed",
+    subtitle = "Which sources consistently and quickly amplify HNB content?",
+    x = "Coverage Rate (% of HNB publication days with response)",
+    y = "Fast Response Rate (% of responses within 1 day)",
+    size = "Total REACH",
+    color = "Actor Type"
+  ) +
+  theme(legend.position = "right")
+```
+
+## Key Amplifier Profiles
+
+```{r key-amplifiers}
+#| label: key-amplifiers
+
+# Define "key amplifiers" as sources with high coverage AND high speed
+source_response[, Amplifier_Score := Coverage_Rate * Fast_Response_Rate / 100]
+
+key_amplifiers <- source_response[order(-Amplifier_Score)][1:15]
+
+key_amplifiers %>%
+  mutate(
+    Total_Responses = format(Total_Responses, big.mark = ","),
+    Fast_Responses = format(Fast_Responses, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    Mean_Lag = sprintf("%.1f days", Mean_Lag),
+    Fast_Response_Rate = sprintf("%.0f%%", Fast_Response_Rate),
+    Coverage_Rate = sprintf("%.0f%%", Coverage_Rate),
+    Amplifier_Score = sprintf("%.1f", Amplifier_Score)
+  ) %>%
+  select(FROM, ACTOR_TYPE, Coverage_Rate, Fast_Response_Rate, Amplifier_Score,
+         Total_REACH, Mean_Lag) %>%
+  kable(col.names = c("Source", "Actor Type", "Coverage %", "Fast %", "Amplifier Score",
+                      "Total REACH", "Mean Lag"),
+        caption = "Top 15 Key Amplifiers (Coverage × Speed)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+# Summary and Key Findings
+
+## Amplification Chain Summary
+
+```{r final-summary}
+#| label: final-summary
+
+# Calculate key metrics
+fast_response_pct <- sum(amplification_data$Lag_Days <= 1) / nrow(amplification_data) * 100
+median_lag <- median(amplification_data$Lag_Days)
+top_amplifier <- primary_sources$FROM[1]
+top_amplifier_responses <- primary_sources$Fast_Responses[1]
+
+tibble(
+  Finding = c(
+    "HNB Official publications analyzed",
+    "Total media responses tracked",
+    "Overall amplification multiplier",
+    "Fast response rate (0-1 days)",
+    "Median response lag",
+    "Sources needed for 50% of amplification REACH",
+    "Top primary amplifier",
+    "Financial Media share of fast responses",
+    "General Media share of fast responses"
+  ),
+  Value = c(
+    format(nrow(hnb_official), big.mark = ","),
+    format(nrow(amplification_data), big.mark = ","),
+    sprintf("%.1fx", amplification_multiplier),
+    sprintf("%.1f%%", fast_response_pct),
+    sprintf("%.0f days", median_lag),
+    as.character(daily_amp[Cumulative_REACH_Pct >= 50, .N][1]),
+    top_amplifier,
+    sprintf("%.1f%%", amp_by_actor[ACTOR_TYPE == "Financial Media" & Lag_Category %in% c("Same day", "1 day"), 
+                                   sum(Article_Share)]),
+    sprintf("%.1f%%", amp_by_actor[ACTOR_TYPE == "General Media" & Lag_Category %in% c("Same day", "1 day"), 
+                                   sum(Article_Share)])
+  )
+) %>%
+  kable(col.names = c("Finding", "Value")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Implications for HNB Communication Strategy
+
+**1. Amplification Dependency**
+
+The `r sprintf("%.1fx", amplification_multiplier)` amplification multiplier confirms that HNB relies heavily on media ecosystem for REACH multiplication. Direct HNB communication captures only `r sprintf("%.1f%%", hnb_reach / (hnb_reach + media_reach) * 100)` of total attention generated by its publications.
+
+**2. Speed Matters**
+
+`r sprintf("%.1f%%", fast_response_pct)` of media coverage occurs within 1 day of HNB publication. The remaining coverage in later periods likely serves different functions (analysis, commentary) with potentially different framing.
+
+**3. Primary Amplifier Strategy**
+
+The top primary amplifiers (`r paste(head(primary_sources$FROM, 3), collapse = ", ")`) account for disproportionate fast-response coverage. Strategic relationships with these sources can accelerate message transmission.
+
+**4. Title Preservation**
+
+`r if(nrow(similarity_data) > 0) sprintf("Mean title similarity of %.3f suggests %s message preservation in headlines.", mean(similarity_data$Jaccard_Similarity), ifelse(mean(similarity_data$Jaccard_Similarity) > 0.3, "moderate", "limited"))` Higher-similarity amplifiers may be preferred for accurate message transmission.
+
+**5. Period Effects**
+
+Euro adoption `r if(nrow(period_multiplier) == 2) sprintf("%s the amplification multiplier from %.1fx to %.1fx", ifelse(period_multiplier[period == "Euro Era", Multiplier] > period_multiplier[period == "ERM II", Multiplier], "increased", "decreased"), period_multiplier[period == "ERM II", Multiplier], period_multiplier[period == "Euro Era", Multiplier])`, indicating `r if(nrow(period_multiplier) == 2) ifelse(period_multiplier[period == "Euro Era", Multiplier] > period_multiplier[period == "ERM II", Multiplier], "heightened", "reduced")` media interest in central bank communication post-transition.
+
+---
+
+# Appendix: Methodological Notes
+
+## Amplification Window Definition
+
+- **Response window:** 0-14 days after HNB publication
+- **Fast response:** 0-1 days (primary amplification)
+- **Attribution:** Media articles are attributed to the most recent HNB publication within the window
+
+## Jaccard Similarity
+
+For title comparison, Jaccard similarity measures word overlap:
+
+$$J(A, B) = \frac{|A \cap B|}{|A \cup B|}$$
+
+Where A and B are the sets of words in HNB and media titles respectively.
+
+- 0 = no common words
+- 1 = identical word sets
+
+## Amplification Multiplier
+
+$$\text{Multiplier} = \frac{\text{Media REACH in response window}}{\text{HNB Official REACH}}$$
+
+This measures how much additional attention is generated in the media ecosystem for each unit of direct HNB REACH.
+
+```{r session-info}
+#| label: session-info
+
+sessionInfo()
+```

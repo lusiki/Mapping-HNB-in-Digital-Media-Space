@@ -1,0 +1,960 @@
+---
+title: "HNB DigiMedia Map 10: Audience Segmentation"
+subtitle: "Mapping Source Types to Audience Segments for Strategic Communication"
+author: "HNB DigiMedia Project"
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    code-fold: true
+    code-summary: "Show code"
+    theme: cosmo
+    fig-width: 10
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(data.table)
+library(scales)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(viridis)
+library(lubridate)
+library(patchwork)
+library(ggrepel)
+
+theme_set(theme_minimal(base_size = 12) +
+          theme(
+            plot.title = element_text(face = "bold", size = 14),
+            plot.subtitle = element_text(color = "gray40"),
+            legend.position = "bottom"
+          ))
+
+# Color palette for actor types
+actor_colors <- c(
+  "HNB Official" = "#1a3c5a",
+  "Financial Regulators" = "#2c5f7c",
+  "Commercial Banks" = "#4a9c6d",
+  "Financial Media" = "#e07b39",
+  "General Media" = "#c44536",
+  "International Sources" = "#6b4c9a",
+  "Academic/Expert" = "#64748b",
+  "Political Actors" = "#eab308",
+  "Financial Influencers" = "#ec4899",
+  "Government" = "#0ea5e9",
+  "Other" = "#94a3b8"
+)
+
+# Audience segment colors
+audience_colors <- c(
+  "Professional/Expert" = "#1a3c5a",
+  "Informed Public" = "#e07b39",
+  "General Public" = "#c44536",
+  "Mixed" = "#64748b"
+)
+
+# Period colors
+period_colors <- c(
+  "ERM II" = "#3498db",
+  "Euro Era" = "#27ae60"
+)
+
+# Day type colors
+day_colors <- c(
+  "Weekday" = "#2c5f7c",
+  "Weekend" = "#e07b39"
+)
+```
+
+# Introduction
+
+This document presents **Map 10: Audience Segmentation Analysis** of the HNB DigiMedia project. The core question driving this analysis is:
+
+> **Do different source types reach different audiences, and what are the implications for HNB communication strategy?**
+
+## Theoretical Motivation
+
+The literature establishes fundamental audience heterogeneity in central bank communication:
+
+1. **Rational inattention (Sims):** Economic agents have finite information-processing capacity, explaining why "financial market participants attend to every nuance of central bank statements while ordinary people react sluggishly"
+
+2. **Delphic vs Odyssean guidance (Campbell et al.):** Different audiences interpret forward guidance differently—experts distinguish between forecasting (Delphic) and commitment (Odyssean), while general audiences may conflate them
+
+3. **Layered communication (ECB):** The ECB's 2021 strategy review emphasized the need for "layered communication" with different messages for different audiences
+
+4. **Public knowledge gap:** Coibion et al. found that reading FOMC statements has "about the same average effect on expectations as simply being told the Fed's inflation target"—suggesting general audiences need simplified intermediation
+
+## Audience Segmentation Framework
+
+We cannot directly observe audiences, but we can infer likely audience segments from source characteristics:
+
+| Audience Segment | Proxy Indicators | Likely Sources |
+|------------------|------------------|----------------|
+| Professional/Expert | Business hours, weekday, high technical density | Financial Media, HNB Official |
+| Informed Public | Mixed timing, moderate complexity | Quality General Media |
+| General Public | Evening/weekend, low complexity | Mass General Media |
+
+```{r load-data}
+#| label: load-data
+
+hnb <- readRDS("C:/Users/lsikic/Dropbox/hnb.rds")
+setDT(hnb)
+
+hnb[, date := as.Date(DATE)]
+hnb[, year := year(date)]
+hnb[, month := month(date)]
+hnb[, DOW := lubridate::wday(date, label = TRUE, abbr = FALSE)]
+hnb[, DOW_num := lubridate::wday(date)]
+hnb[, is_weekend := DOW_num %in% c(1, 7)]  # Sunday = 1, Saturday = 7
+hnb[, day_type := ifelse(is_weekend, "Weekend", "Weekday")]
+
+# Extract hour if TIME is available
+if ("TIME" %in% names(hnb) && sum(!is.na(hnb$TIME)) > 100) {
+  hnb[, hour := as.integer(substr(TIME, 1, 2))]
+  has_time <- TRUE
+} else {
+  hnb[, hour := NA_integer_]
+  has_time <- FALSE
+}
+
+hnb[, period := fcase(
+  date < as.Date("2023-01-01"), "ERM II",
+  default = "Euro Era"
+)]
+hnb[, period := factor(period, levels = c("ERM II", "Euro Era"))]
+
+n_articles <- nrow(hnb)
+n_sources <- uniqueN(hnb$FROM)
+
+cat("Data loaded:", n_articles, "articles from", n_sources, "sources\n")
+cat("Time data available:", has_time, "\n")
+```
+
+```{r actor-classification}
+#| label: actor-classification
+
+# =============================================================================
+# ACTOR CLASSIFICATION - SYNCHRONIZED WITH MAPS 1-9
+# =============================================================================
+
+manual_overrides <- list(
+  "HNB Official" = c(
+    "hnb.hr", "hrvatska narodna banka",
+    "hrvatska narodna banka / croatian national bank"
+  ),
+  "Financial Regulators" = c(
+    "hanfa.hr", "hanfa", "hrvatska agencija za nadzor financijskih usluga",
+    "fina.hr", "fina", "financijska agencija"
+  ),
+  "Government" = c(
+    "gov.hr", "vlada", "vlada republike hrvatske",
+    "ministarstvo financija", "sabor.hr"
+  ),
+  "Financial Media" = c(
+    "poslovni.hr", "poslovni dnevnik", "seebiz.eu", "seebiz",
+    "lider.media", "lidermedia.hr", "lider", "bloombergadria.com",
+    "bloomberg adria", "hrportfolio.hr", "privredni.hr"
+  ),
+  "Commercial Banks" = c(
+    "zaba.hr", "zagrebačka banka", "pbz.hr", "privredna banka zagreb",
+    "erste.hr", "erste banka", "hpb.hr", "hrvatska poštanska banka",
+    "otp banka", "raiffeisen", "addiko"
+  ),
+  "Academic/Expert" = c(
+    "eizg.hr", "ekonomski institut zagreb", "ijf.hr",
+    "institut za javne financije", "ekonomski fakultet"
+  )
+)
+
+general_media_sources <- c(
+  "index.hr", "index", "jutarnji.hr", "jutarnji", "jutarnji list",
+  "vecernji.hr", "vecernji", "večernji list",
+  "24sata.hr", "24sata", "slobodnadalmacija.hr", "slobodna dalmacija",
+  "novilist.hr", "novi list", "dnevnik.hr", "dnevnik",
+  "tportal.hr", "tportal", "telegram.hr", "telegram",
+  "net.hr", "rtl.hr", "rtl", "hrt.hr", "hrt",
+  "n1info.hr", "n1info.com", "n1", "nacional.hr", "nacional",
+  "direktno.hr", "direktno", "dnevno.hr", "dnevno"
+)
+
+classify_actor_hnb <- function(from_val, url_val = NA) {
+  from_lower <- tolower(trimws(as.character(from_val)))
+  url_lower <- tolower(ifelse(is.na(url_val), "", as.character(url_val)))
+  combined <- paste(from_lower, url_lower)
+  
+  match_any <- function(patterns, text, fixed = TRUE) {
+    any(sapply(patterns, function(p) grepl(p, text, fixed = fixed)))
+  }
+  
+  for (actor_type in names(manual_overrides)) {
+    if (match_any(manual_overrides[[actor_type]], from_lower)) {
+      return(actor_type)
+    }
+  }
+  
+  if (grepl("hnb\\.hr", url_lower) || grepl("hnb\\.hr", from_lower)) {
+    return("HNB Official")
+  }
+  
+  if (grepl("hanfa|fina\\.hr", combined)) {
+    return("Financial Regulators")
+  }
+  
+  if (grepl("gov\\.hr|vlada|ministarstvo", combined)) {
+    return("Government")
+  }
+  
+  bank_patterns <- c("banka", "bank", "zaba", "pbz", "erste", "hpb",
+                     "otp", "raiffeisen", "addiko", "sberbank")
+  if (match_any(bank_patterns, from_lower)) {
+    if (!grepl("narodna|hnb|central", from_lower)) {
+      return("Commercial Banks")
+    }
+  }
+  
+  financial_media_patterns <- c(
+    "poslovni", "seebiz", "lider", "bloomberg", "portfolio",
+    "privredni", "finance", "ekonom", "business", "capital"
+  )
+  if (match_any(financial_media_patterns, from_lower)) {
+    return("Financial Media")
+  }
+  
+  if (match_any(general_media_sources, from_lower)) {
+    return("General Media")
+  }
+  
+  news_patterns <- c("portal", "vijesti", "news", "info", "dnevni",
+                     "radio", "tv", ".hr")
+  if (match_any(news_patterns, from_lower)) {
+    return("General Media")
+  }
+  
+  return("Other")
+}
+
+hnb[, ACTOR_TYPE := mapply(classify_actor_hnb, FROM, URL)]
+hnb[, INSTITUTIONAL := ACTOR_TYPE %in% c("HNB Official", "Financial Regulators", "Government")]
+```
+
+# Analysis 10.1: Source Type Profiles
+
+## Actor Type Overview
+
+```{r actor-profiles}
+#| label: actor-profiles
+
+actor_profiles <- hnb[, .(
+  Articles = .N,
+  Sources = uniqueN(FROM),
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE),
+  Median_REACH = median(REACH, na.rm = TRUE),
+  Weekend_Share = sum(is_weekend) / .N * 100,
+  Weekday_Share = sum(!is_weekend) / .N * 100
+), by = ACTOR_TYPE][order(-Total_REACH)]
+
+actor_profiles[, `:=`(
+  Article_Share = Articles / sum(Articles) * 100,
+  REACH_Share = Total_REACH / sum(Total_REACH) * 100,
+  REACH_per_Article = Total_REACH / Articles
+)]
+
+actor_profiles %>%
+  filter(ACTOR_TYPE != "Other") %>%
+  mutate(
+    Articles = format(Articles, big.mark = ","),
+    Sources = format(Sources, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    Mean_REACH = format(round(Mean_REACH, 0), big.mark = ","),
+    Article_Share = sprintf("%.1f%%", Article_Share),
+    REACH_Share = sprintf("%.1f%%", REACH_Share),
+    Weekend_Share = sprintf("%.1f%%", Weekend_Share)
+  ) %>%
+  select(ACTOR_TYPE, Articles, Sources, REACH_Share, Mean_REACH, Weekend_Share) %>%
+  kable(col.names = c("Actor Type", "Articles", "Sources", "REACH Share", 
+                      "Mean REACH", "Weekend %")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Financial Media vs General Media Comparison
+
+```{r fin-vs-gen}
+#| label: fin-vs-gen
+#| fig-height: 7
+
+media_comparison <- hnb[ACTOR_TYPE %in% c("Financial Media", "General Media")]
+
+media_stats <- media_comparison[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE),
+  Median_REACH = median(REACH, na.rm = TRUE),
+  SD_REACH = sd(REACH, na.rm = TRUE),
+  Weekend_Share = sum(is_weekend) / .N * 100,
+  Sources = uniqueN(FROM)
+), by = ACTOR_TYPE]
+
+# Visualization
+p1 <- ggplot(media_comparison, aes(x = ACTOR_TYPE, y = REACH, fill = ACTOR_TYPE)) +
+  geom_violin(alpha = 0.7) +
+  geom_boxplot(width = 0.15, fill = "white", outlier.shape = NA) +
+  scale_y_log10(labels = comma) +
+  scale_fill_manual(values = actor_colors) +
+  labs(
+    title = "REACH Distribution",
+    x = NULL,
+    y = "REACH (log scale)"
+  ) +
+  theme(legend.position = "none")
+
+p2 <- ggplot(media_stats, aes(x = ACTOR_TYPE, y = Weekend_Share, fill = ACTOR_TYPE)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = sprintf("%.1f%%", Weekend_Share)), vjust = -0.3, size = 4) +
+  scale_fill_manual(values = actor_colors) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Weekend Publishing Share",
+    x = NULL,
+    y = "% Published on Weekend"
+  ) +
+  theme(legend.position = "none")
+
+p1 + p2 + plot_annotation(
+  title = "Financial Media vs General Media: Audience Indicators",
+  subtitle = "REACH patterns and timing suggest different audience segments"
+)
+```
+
+# Analysis 10.2: Temporal Patterns as Audience Proxies
+
+## Weekday vs Weekend Publication
+
+```{r weekday-weekend}
+#| label: weekday-weekend
+#| fig-height: 7
+
+day_type_actor <- hnb[ACTOR_TYPE != "Other", .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE)
+), by = .(ACTOR_TYPE, day_type)]
+
+day_type_actor[, Article_Share := Articles / sum(Articles) * 100, by = ACTOR_TYPE]
+
+ggplot(day_type_actor, aes(x = ACTOR_TYPE, y = Article_Share, fill = day_type)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_text(aes(label = sprintf("%.0f%%", Article_Share)), 
+            position = position_dodge(width = 0.7), vjust = -0.3, size = 3) +
+  scale_fill_manual(values = day_colors) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Publication Timing by Actor Type",
+    subtitle = "Weekend publishing suggests general audience orientation",
+    x = NULL,
+    y = "Share of Articles (%)",
+    fill = "Day Type"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "top")
+```
+
+## Weekend Publishing Index
+
+```{r weekend-index}
+#| label: weekend-index
+#| fig-height: 6
+
+# Calculate weekend index (weekend share / expected share if random)
+# Expected weekend share = 2/7 = 28.6%
+expected_weekend <- 2/7 * 100
+
+weekend_index <- hnb[ACTOR_TYPE != "Other", .(
+  Weekend_Share = sum(is_weekend) / .N * 100,
+  Articles = .N
+), by = ACTOR_TYPE]
+
+weekend_index[, Weekend_Index := Weekend_Share / expected_weekend]
+
+ggplot(weekend_index, aes(x = reorder(ACTOR_TYPE, Weekend_Index), y = Weekend_Index, fill = ACTOR_TYPE)) +
+  geom_col(width = 0.7) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
+  geom_text(aes(label = sprintf("%.2f", Weekend_Index)), hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  scale_fill_manual(values = actor_colors) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Weekend Publishing Index by Actor Type",
+    subtitle = "Index = Actual Weekend % / Expected 28.6% (>1 = more weekend publishing)",
+    x = NULL,
+    y = "Weekend Index",
+    caption = "Higher index suggests general audience orientation; lower suggests professional audience"
+  ) +
+  theme(legend.position = "none")
+```
+
+## Hourly Patterns (if available)
+
+```{r hourly-patterns}
+#| label: hourly-patterns
+#| fig-height: 8
+
+if (has_time && sum(!is.na(hnb$hour)) > 500) {
+  hourly_actor <- hnb[!is.na(hour) & ACTOR_TYPE %in% c("HNB Official", "Financial Media", "General Media"), .(
+    Articles = .N
+  ), by = .(ACTOR_TYPE, hour)]
+  
+  hourly_actor[, Share := Articles / sum(Articles) * 100, by = ACTOR_TYPE]
+  
+  ggplot(hourly_actor, aes(x = hour, y = Share, color = ACTOR_TYPE)) +
+    geom_line(linewidth = 1.2) +
+    geom_point(size = 2) +
+    geom_vline(xintercept = c(9, 17), linetype = "dashed", color = "gray50", alpha = 0.5) +
+    annotate("rect", xmin = 9, xmax = 17, ymin = -Inf, ymax = Inf, 
+             fill = "gray80", alpha = 0.2) +
+    annotate("text", x = 13, y = max(hourly_actor$Share) * 0.95, 
+             label = "Business Hours", color = "gray40", size = 3) +
+    scale_x_continuous(breaks = seq(0, 23, 3)) +
+    scale_color_manual(values = actor_colors) +
+    labs(
+      title = "Hourly Publication Patterns by Actor Type",
+      subtitle = "Business hours (9-17) publishing suggests professional audience",
+      x = "Hour of Day",
+      y = "Share of Daily Articles (%)",
+      color = "Actor Type"
+    ) +
+    theme(legend.position = "top")
+} else {
+  cat("Insufficient hourly data for analysis.\n")
+}
+```
+
+## Business Hours Index
+
+```{r business-hours}
+#| label: business-hours
+
+if (has_time && sum(!is.na(hnb$hour)) > 500) {
+  # Define business hours as 9-17
+  hnb[, is_business_hours := hour >= 9 & hour <= 17]
+  
+  business_index <- hnb[!is.na(hour) & ACTOR_TYPE != "Other", .(
+    Business_Hours_Share = sum(is_business_hours, na.rm = TRUE) / .N * 100,
+    Articles = .N
+  ), by = ACTOR_TYPE]
+  
+  # Expected if random = 9/24 = 37.5%
+  expected_business <- 9/24 * 100
+  business_index[, Business_Index := Business_Hours_Share / expected_business]
+  
+  business_index[order(-Business_Index)] %>%
+    mutate(
+      Articles = format(Articles, big.mark = ","),
+      Business_Hours_Share = sprintf("%.1f%%", Business_Hours_Share),
+      Business_Index = sprintf("%.2f", Business_Index),
+      Audience_Signal = ifelse(as.numeric(Business_Index) > 1.2, "Professional", 
+                               ifelse(as.numeric(Business_Index) < 0.8, "General", "Mixed"))
+    ) %>%
+    kable(col.names = c("Actor Type", "Articles", "Business Hours %", 
+                        "Business Index", "Audience Signal")) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+}
+```
+
+# Analysis 10.3: REACH Pattern Clustering
+
+## Source Clustering by REACH Characteristics
+
+```{r reach-clustering}
+#| label: reach-clustering
+#| fig-height: 8
+
+# Calculate source-level metrics for clustering
+source_metrics <- hnb[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE),
+  Median_REACH = median(REACH, na.rm = TRUE),
+  SD_REACH = sd(REACH, na.rm = TRUE),
+  Weekend_Share = sum(is_weekend) / .N * 100,
+  ACTOR_TYPE = first(ACTOR_TYPE)
+), by = FROM][Articles >= 10]  # Minimum 10 articles for stability
+
+source_metrics[, `:=`(
+  REACH_CV = SD_REACH / Mean_REACH,  # Coefficient of variation
+  REACH_Category = fcase(
+    Mean_REACH > quantile(Mean_REACH, 0.75, na.rm = TRUE), "High REACH",
+    Mean_REACH > quantile(Mean_REACH, 0.25, na.rm = TRUE), "Medium REACH",
+    default = "Low REACH"
+  )
+)]
+
+# Visualize source landscape
+ggplot(source_metrics[ACTOR_TYPE != "Other"], 
+       aes(x = Mean_REACH, y = Weekend_Share, color = ACTOR_TYPE, size = Articles)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = 28.6, linetype = "dashed", color = "gray50") +
+  geom_vline(xintercept = median(source_metrics$Mean_REACH, na.rm = TRUE), 
+             linetype = "dashed", color = "gray50") +
+  scale_x_log10(labels = comma) +
+  scale_size_continuous(range = c(2, 10)) +
+  scale_color_manual(values = actor_colors) +
+  annotate("text", x = min(source_metrics$Mean_REACH) * 1.5, y = 45, 
+           label = "General Audience\nLow REACH", hjust = 0, size = 3, color = "gray40") +
+  annotate("text", x = max(source_metrics$Mean_REACH) * 0.3, y = 45, 
+           label = "General Audience\nHigh REACH", hjust = 0, size = 3, color = "gray40") +
+  annotate("text", x = min(source_metrics$Mean_REACH) * 1.5, y = 10, 
+           label = "Professional\nLow REACH", hjust = 0, size = 3, color = "gray40") +
+  annotate("text", x = max(source_metrics$Mean_REACH) * 0.3, y = 10, 
+           label = "Professional\nHigh REACH", hjust = 0, size = 3, color = "gray40") +
+  labs(
+    title = "Source Landscape: REACH vs Audience Orientation",
+    subtitle = "Horizontal line = expected weekend share; Vertical = median REACH",
+    x = "Mean REACH per Article (log scale)",
+    y = "Weekend Publishing Share (%)",
+    color = "Actor Type",
+    size = "Articles"
+  ) +
+  theme(legend.position = "right")
+```
+
+## Audience Segment Assignment
+
+```{r audience-segments}
+#| label: audience-segments
+
+# Assign audience segments based on indicators
+source_metrics[, Audience_Segment := fcase(
+  Weekend_Share < 20 & Mean_REACH > median(Mean_REACH, na.rm = TRUE), "Professional/Expert",
+  Weekend_Share > 35, "General Public",
+  Mean_REACH > quantile(Mean_REACH, 0.75, na.rm = TRUE), "Informed Public",
+  default = "Mixed"
+)]
+
+segment_summary <- source_metrics[, .(
+  Sources = .N,
+  Articles = sum(Articles),
+  Total_REACH = sum(Total_REACH),
+  Mean_Source_REACH = mean(Mean_REACH, na.rm = TRUE),
+  Mean_Weekend_Share = mean(Weekend_Share, na.rm = TRUE)
+), by = Audience_Segment][order(-Total_REACH)]
+
+segment_summary[, REACH_Share := Total_REACH / sum(Total_REACH) * 100]
+
+segment_summary %>%
+  mutate(
+    Sources = format(Sources, big.mark = ","),
+    Articles = format(Articles, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    REACH_Share = sprintf("%.1f%%", REACH_Share),
+    Mean_Source_REACH = format(round(Mean_Source_REACH, 0), big.mark = ","),
+    Mean_Weekend_Share = sprintf("%.1f%%", Mean_Weekend_Share)
+  ) %>%
+  kable(col.names = c("Audience Segment", "Sources", "Articles", "Total REACH",
+                      "REACH Share", "Mean REACH", "Weekend %")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Segment Visualization
+
+```{r segment-viz}
+#| label: segment-viz
+#| fig-height: 7
+
+segment_reach <- segment_summary %>%
+  select(Audience_Segment, REACH_Share) %>%
+  mutate(REACH_Share = as.numeric(gsub("%", "", REACH_Share)))
+
+ggplot(segment_reach, aes(x = reorder(Audience_Segment, REACH_Share), 
+                          y = REACH_Share, fill = Audience_Segment)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = sprintf("%.1f%%", REACH_Share)), hjust = -0.1, size = 4) +
+  coord_flip() +
+  scale_fill_manual(values = audience_colors) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "REACH Distribution by Audience Segment",
+    subtitle = "Which audience segments capture the most attention?",
+    x = NULL,
+    y = "Share of Total REACH (%)"
+  ) +
+  theme(legend.position = "none")
+```
+
+# Analysis 10.4: Actor Type to Audience Mapping
+
+## Actor-Audience Matrix
+
+```{r actor-audience}
+#| label: actor-audience
+#| fig-height: 7
+
+actor_segment <- merge(
+  source_metrics[, .(Sources = .N, Articles = sum(Articles), REACH = sum(Total_REACH)), 
+                 by = .(ACTOR_TYPE, Audience_Segment)],
+  source_metrics[, .(Total_Sources = .N, Total_Articles = sum(Articles)), by = ACTOR_TYPE],
+  by = "ACTOR_TYPE"
+)
+
+actor_segment[, `:=`(
+  Source_Share = Sources / Total_Sources * 100,
+  Article_Share = Articles / Total_Articles * 100
+)]
+
+# Heatmap
+ggplot(actor_segment[ACTOR_TYPE != "Other"], 
+       aes(x = Audience_Segment, y = ACTOR_TYPE, fill = Article_Share)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = sprintf("%.0f%%", Article_Share)), color = "white", size = 3.5) +
+  scale_fill_gradient(low = "#f0f0f0", high = "#1a3c5a") +
+  labs(
+    title = "Actor Type - Audience Segment Matrix",
+    subtitle = "What percentage of each actor's articles reach each audience?",
+    x = "Audience Segment",
+    y = "Actor Type",
+    fill = "Article %"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Primary Audience by Actor Type
+
+```{r primary-audience}
+#| label: primary-audience
+
+primary_audience <- actor_segment[, .SD[which.max(Article_Share)], by = ACTOR_TYPE]
+
+primary_audience[ACTOR_TYPE != "Other"][order(-Article_Share)] %>%
+  mutate(
+    Sources = format(Sources, big.mark = ","),
+    Articles = format(Articles, big.mark = ","),
+    Article_Share = sprintf("%.1f%%", Article_Share)
+  ) %>%
+  select(ACTOR_TYPE, Audience_Segment, Sources, Articles, Article_Share) %>%
+  kable(col.names = c("Actor Type", "Primary Audience", "Sources", "Articles", "Share")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+# Analysis 10.5: HNB Communication Reach by Audience
+
+## HNB Official Audience Penetration
+
+```{r hnb-audience}
+#| label: hnb-audience
+#| fig-height: 6
+
+# How does HNB Official reach different audience segments?
+hnb_segment <- source_metrics[ACTOR_TYPE == "HNB Official"]
+
+if (nrow(hnb_segment) > 0) {
+  hnb_audience <- hnb_segment[, .(
+    Sources = .N,
+    Articles = sum(Articles),
+    Total_REACH = sum(Total_REACH)
+  ), by = Audience_Segment]
+  
+  hnb_audience[, REACH_Share := Total_REACH / sum(Total_REACH) * 100]
+  
+  cat("HNB Official Audience Penetration\n")
+  cat("==================================\n")
+  print(hnb_audience)
+} else {
+  cat("Insufficient HNB Official source data for segment analysis.\n")
+}
+```
+## Audience Segment Comparison: HNB vs Media
+
+```{r hnb-vs-media-audience}
+#| label: hnb-vs-media-audience
+#| fig-height: 7
+
+# Compare how HNB Official vs Media reach different segments
+hnb_media_segment <- source_metrics[ACTOR_TYPE %in% c("HNB Official", "Financial Media", "General Media"), .(
+  Articles = sum(Articles),
+  Total_REACH = sum(Total_REACH)
+), by = .(ACTOR_TYPE, Audience_Segment)]
+
+hnb_media_segment[, REACH_Share := Total_REACH / sum(Total_REACH) * 100, by = ACTOR_TYPE]
+
+ggplot(hnb_media_segment, aes(x = Audience_Segment, y = REACH_Share, fill = ACTOR_TYPE)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_text(aes(label = sprintf("%.0f%%", REACH_Share)), 
+            position = position_dodge(width = 0.7), vjust = -0.3, size = 3) +
+  scale_fill_manual(values = actor_colors) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Audience Segment Penetration: HNB vs Media",
+    subtitle = "How do different sources distribute attention across audience segments?",
+    x = "Audience Segment",
+    y = "Share of Actor's REACH (%)",
+    fill = "Actor Type"
+  ) +
+  theme(legend.position = "top")
+```
+
+# Analysis 10.6: Layered Communication Opportunities
+
+## Communication Channel Matrix
+
+Based on audience segmentation, we identify optimal channels for different communication objectives:
+
+```{r channel-matrix}
+#| label: channel-matrix
+
+# Build channel recommendation matrix
+channel_matrix <- data.table(
+  Audience = c("Professional/Expert", "Professional/Expert", 
+               "Informed Public", "Informed Public",
+               "General Public", "General Public"),
+  Objective = c("Technical Detail", "Market Guidance",
+                "Policy Explanation", "Economic Context",
+                "Awareness Building", "Trust Building"),
+  Recommended_Channel = c("HNB Official, Financial Media", "Financial Media, HNB Official",
+                          "Quality General Media", "Financial Media",
+                          "Mass General Media", "All Channels"),
+  Timing = c("Business hours, weekday", "Market hours",
+             "Morning, weekday", "Any",
+             "Evening, weekend", "Consistent"),
+  Complexity = c("High", "Medium-High",
+                 "Medium", "Medium",
+                 "Low", "Low")
+)
+
+channel_matrix %>%
+  kable(col.names = c("Target Audience", "Communication Objective", 
+                      "Recommended Channel", "Optimal Timing", "Complexity")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Audience Reach Gap Analysis
+
+```{r reach-gap}
+#| label: reach-gap
+#| fig-height: 7
+
+# Calculate HNB's reach efficiency by segment
+segment_totals <- source_metrics[, .(
+  Segment_REACH = sum(Total_REACH)
+), by = Audience_Segment]
+
+hnb_segment_reach <- source_metrics[ACTOR_TYPE == "HNB Official", .(
+  HNB_REACH = sum(Total_REACH)
+), by = Audience_Segment]
+
+if (nrow(hnb_segment_reach) > 0) {
+  reach_gap <- merge(segment_totals, hnb_segment_reach, by = "Audience_Segment", all.x = TRUE)
+  reach_gap[is.na(HNB_REACH), HNB_REACH := 0]
+  reach_gap[, `:=`(
+    HNB_Share = HNB_REACH / Segment_REACH * 100,
+    Gap_to_10pct = 10 - (HNB_REACH / Segment_REACH * 100)  # Gap to 10% target
+  )]
+  
+  ggplot(reach_gap, aes(x = reorder(Audience_Segment, -HNB_Share), y = HNB_Share, 
+                        fill = Audience_Segment)) +
+    geom_col(width = 0.6) +
+    geom_hline(yintercept = 10, linetype = "dashed", color = "#ef4444") +
+    geom_text(aes(label = sprintf("%.1f%%", HNB_Share)), vjust = -0.3, size = 4) +
+    annotate("text", x = 0.7, y = 11, label = "10% Target", hjust = 0, color = "#ef4444", size = 3) +
+    scale_fill_manual(values = audience_colors) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+    labs(
+      title = "HNB Official Voice Share by Audience Segment",
+      subtitle = "Where does HNB have the largest reach gaps?",
+      x = NULL,
+      y = "HNB Share of Segment REACH (%)"
+    ) +
+    theme(legend.position = "none")
+}
+```
+
+# Analysis 10.7: Top Sources by Audience Segment
+
+## Leading Sources per Segment
+
+```{r top-sources-segment}
+#| label: top-sources-segment
+
+# Top 5 sources by REACH in each segment
+top_by_segment <- source_metrics[, {
+  .SD[order(-Total_REACH)][1:min(5, .N)]
+}, by = Audience_Segment]
+
+top_by_segment %>%
+  mutate(
+    Articles = format(Articles, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    Mean_REACH = format(round(Mean_REACH, 0), big.mark = ","),
+    Weekend_Share = sprintf("%.0f%%", Weekend_Share)
+  ) %>%
+  select(Audience_Segment, FROM, ACTOR_TYPE, Articles, Total_REACH, Weekend_Share) %>%
+  kable(col.names = c("Segment", "Source", "Actor Type", "Articles", "REACH", "Weekend %")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  scroll_box(height = "500px")
+```
+
+## Strategic Partnership Candidates
+
+```{r partnership-candidates}
+#| label: partnership-candidates
+
+# Identify high-REACH sources in underserved segments for HNB
+partnership_candidates <- source_metrics[
+  ACTOR_TYPE %in% c("Financial Media", "General Media") &
+  Mean_REACH > quantile(Mean_REACH, 0.7, na.rm = TRUE)
+][order(Audience_Segment, -Total_REACH)]
+
+# Add strategic value score
+partnership_candidates[, Strategic_Value := fcase(
+  Audience_Segment == "General Public" & Mean_REACH > median(Mean_REACH), "High",
+  Audience_Segment == "Informed Public", "Medium-High",
+  Audience_Segment == "Professional/Expert", "Medium",
+  default = "Standard"
+)]
+
+partnership_candidates[1:min(15, nrow(partnership_candidates))] %>%
+  mutate(
+    Articles = format(Articles, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    Mean_REACH = format(round(Mean_REACH, 0), big.mark = ","),
+    Weekend_Share = sprintf("%.0f%%", Weekend_Share)
+  ) %>%
+  select(FROM, ACTOR_TYPE, Audience_Segment, Articles, Mean_REACH, Strategic_Value) %>%
+  kable(col.names = c("Source", "Actor Type", "Audience", "Articles", 
+                      "Mean REACH", "Strategic Value"),
+        caption = "Top Media Partnership Candidates for Audience Expansion") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+# Summary and Key Findings
+
+## Audience Segmentation Summary
+
+```{r final-summary}
+#| label: final-summary
+
+# Calculate key metrics
+fin_media_weekend <- actor_profiles[ACTOR_TYPE == "Financial Media", Weekend_Share]
+gen_media_weekend <- actor_profiles[ACTOR_TYPE == "General Media", Weekend_Share]
+hnb_weekend <- actor_profiles[ACTOR_TYPE == "HNB Official", Weekend_Share]
+
+professional_reach <- segment_summary[Audience_Segment == "Professional/Expert", REACH_Share]
+general_reach <- segment_summary[Audience_Segment == "General Public", REACH_Share]
+
+tibble(
+  Finding = c(
+    "Audience segments identified",
+    "Professional/Expert REACH share",
+    "General Public REACH share",
+    "Financial Media weekend share",
+    "General Media weekend share",
+    "HNB Official weekend share",
+    "HNB primary audience segment",
+    "Largest HNB reach gap",
+    "Top partnership candidate"
+  ),
+  Value = c(
+    paste(unique(source_metrics$Audience_Segment), collapse = ", "),
+    sprintf("%.1f%%", as.numeric(gsub("%", "", professional_reach))),
+    sprintf("%.1f%%", as.numeric(gsub("%", "", general_reach))),
+    sprintf("%.1f%%", fin_media_weekend),
+    sprintf("%.1f%%", gen_media_weekend),
+    sprintf("%.1f%%", hnb_weekend),
+    if(nrow(hnb_segment) > 0) primary_audience[ACTOR_TYPE == "HNB Official", Audience_Segment] else "N/A",
+    if(exists("reach_gap")) reach_gap[which.max(Gap_to_10pct), Audience_Segment] else "N/A",
+    if(nrow(partnership_candidates) > 0) partnership_candidates$FROM[1] else "N/A"
+  )
+) %>%
+  kable(col.names = c("Finding", "Value")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Implications for HNB Communication Strategy
+
+**1. Audience Differentiation**
+
+The analysis confirms distinct audience segments with different source preferences:
+
+- **Professional/Expert:** Reached primarily through weekday, business-hours content from specialized sources
+- **Informed Public:** Mixed timing, quality media with moderate complexity
+- **General Public:** Weekend and evening content from mass media sources
+
+**2. HNB Current Position**
+
+HNB Official communication currently reaches primarily the `r if(nrow(hnb_segment) > 0) primary_audience[ACTOR_TYPE == "HNB Official", Audience_Segment] else "Professional"` segment, with `r sprintf("%.1f%%", hnb_weekend)` weekend publishing share suggesting professional-oriented timing.
+
+**3. Layered Communication Recommendation**
+
+Following ECB best practices:
+
+| Layer | Audience | Recommended Approach |
+|-------|----------|---------------------|
+| **Layer 1** | Professional/Expert | Current HNB Official style, technical detail |
+| **Layer 2** | Informed Public | Partnership with quality Financial Media |
+| **Layer 3** | General Public | Simplified messaging through General Media partnerships |
+
+**4. Strategic Partnerships**
+
+To expand General Public reach, prioritize relationships with high-REACH sources that have strong weekend publishing patterns and general audience orientation.
+
+**5. Timing Optimization**
+
+Consider publishing simplified summaries during evening hours and weekends to capture General Public attention, while maintaining business-hours releases for market-oriented content.
+
+---
+
+# Appendix: Methodological Notes
+
+## Audience Segment Classification
+
+Sources are classified into audience segments based on:
+
+1. **Weekend Publishing Share**
+   - <20%: Professional orientation
+   - 20-35%: Mixed
+   - >35%: General public orientation
+
+2. **Mean REACH per Article**
+   - Above median: Higher audience penetration
+   - Below median: Niche audience
+
+3. **Combined Classification**
+   - Professional/Expert: Low weekend + High REACH
+   - Informed Public: High REACH sources not fitting other categories
+   - General Public: High weekend share
+   - Mixed: All others
+
+## Weekend Index Calculation
+
+$$\text{Weekend Index} = \frac{\text{Actual Weekend Share}}{28.6\%}$$
+
+Where 28.6% = 2/7 is the expected weekend share if publishing were random.
+
+## Business Hours Index
+
+$$\text{Business Index} = \frac{\text{Business Hours Share}}{37.5\%}$$
+
+Where 37.5% = 9/24 is the expected business hours share if publishing were random.
+
+## Limitations
+
+1. Audience segmentation is inferred from source characteristics, not direct audience data
+2. REACH measures potential exposure, not confirmed audience demographics
+3. Weekend publishing may reflect editorial schedules rather than audience targeting
+4. Time-of-day patterns depend on TIME field availability
+
+```{r session-info}
+#| label: session-info
+
+sessionInfo()
+```
