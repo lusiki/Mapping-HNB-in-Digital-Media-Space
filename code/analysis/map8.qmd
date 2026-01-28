@@ -791,35 +791,75 @@ if (!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) {
 
 # Analysis 8.5: Technical Term Analysis
 
-## Most Frequent Technical Terms
+## Technical Term Categories
 
-```{r technical-terms}
-#| label: technical-terms
-#| fig-height: 8
+The technical term dictionary includes 100+ Croatian financial and monetary policy terms across these categories:
 
-if (!is.null(text_field)) {
-  # Count technical term frequencies across corpus
-  all_text <- paste(hnb[[text_field]][!is.na(hnb[[text_field]])], collapse = " ")
-  all_text_clean <- tolower(all_text)
-  all_text_clean <- gsub("[[:punct:]]", " ", all_text_clean)
-  all_words <- unlist(strsplit(all_text_clean, "\\s+"))
+| Category | Example Terms | Count |
+|----------|---------------|-------|
+| Monetary Policy | monetarni, inflacija, kamatna, stopa, likvidnost | ~25 |
+| Euro/Currency | euro, kuna, konverzija, eurozona, tečaj | ~15 |
+| Banking | banka, kredit, depozit, kapital, solventnost | ~20 |
+| Economic Indicators | BDP, gospodarski, fiskalni, deficit, dug | ~20 |
+| Financial Instruments | obveznica, dionice, portfolio, imovina | ~10 |
+| Regulatory | regulativa, supervizija, nadzor, direktiva | ~10 |
+
+## Technical Density Distribution
+
+```{r technical-distribution}
+#| label: technical-distribution
+#| fig-height: 6
+
+if (!is.null(text_field) && sum(!is.na(hnb$technical_density)) > 0) {
+  ggplot(hnb[!is.na(technical_density) & technical_density > 0], 
+         aes(x = technical_density)) +
+    geom_histogram(bins = 50, fill = "#2c5f7c", color = "white", alpha = 0.8) +
+    geom_vline(xintercept = mean(hnb$technical_density, na.rm = TRUE), 
+               linetype = "dashed", color = "#e07b39", linewidth = 1) +
+    annotate("text", x = mean(hnb$technical_density, na.rm = TRUE) + 0.5, y = Inf,
+             label = paste0("Mean = ", sprintf("%.2f%%", mean(hnb$technical_density, na.rm = TRUE))),
+             vjust = 2, hjust = 0, color = "#e07b39", fontface = "bold") +
+    labs(
+      title = "Distribution of Technical Term Density",
+      subtitle = "Percentage of technical terms per article",
+      x = "Technical Density (%)",
+      y = "Number of Articles"
+    )
+}
+```
+
+## Technical Density by Actor Type
+
+```{r technical-by-actor}
+#| label: technical-by-actor
+#| fig-height: 7
+
+if (!is.null(text_field) && sum(!is.na(hnb$technical_density)) > 0) {
+  tech_by_actor <- hnb[!is.na(technical_density) & ACTOR_TYPE != "Other", .(
+    Mean_Technical = mean(technical_density, na.rm = TRUE),
+    Median_Technical = median(technical_density, na.rm = TRUE),
+    SD_Technical = sd(technical_density, na.rm = TRUE),
+    Articles = .N
+  ), by = ACTOR_TYPE][Articles >= 20][order(-Mean_Technical)]
   
-  tech_counts <- data.table(term = all_words)[term %in% technical_terms, .N, by = term][order(-N)]
-  
-  if (nrow(tech_counts) > 0) {
-    ggplot(tech_counts[1:min(30, nrow(tech_counts))], 
-           aes(x = reorder(term, N), y = N)) +
-      geom_col(fill = "#2c5f7c", width = 0.8) +
-      geom_text(aes(label = format(N, big.mark = ",")), hjust = -0.1, size = 3) +
-      coord_flip() +
-      scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.15))) +
-      labs(
-        title = "Most Frequent Technical Terms in Corpus",
-        subtitle = "Financial and monetary policy vocabulary",
-        x = NULL,
-        y = "Frequency"
-      )
-  }
+  ggplot(tech_by_actor, aes(x = reorder(ACTOR_TYPE, Mean_Technical), 
+                            y = Mean_Technical, fill = ACTOR_TYPE)) +
+    geom_col(width = 0.7) +
+    geom_errorbar(aes(ymin = Mean_Technical - SD_Technical/sqrt(Articles),
+                      ymax = Mean_Technical + SD_Technical/sqrt(Articles)),
+                  width = 0.2) +
+    geom_text(aes(label = sprintf("%.2f%%", Mean_Technical)), hjust = -0.1, size = 3.5) +
+    coord_flip() +
+    scale_fill_manual(values = actor_colors) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+    labs(
+      title = "Technical Term Density by Actor Type",
+      subtitle = "Which sources use the most specialized vocabulary?",
+      x = NULL,
+      y = "Mean Technical Density (%)",
+      caption = "Error bars show standard error; minimum 20 articles"
+    ) +
+    theme(legend.position = "none")
 }
 ```
 
@@ -1030,7 +1070,7 @@ if (!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) {
 
 **4. Technical Language**
 
-The prevalence of technical terms (`r if(!is.null(text_field)) tech_counts$term[1]`, `r if(!is.null(text_field)) tech_counts$term[2]`, `r if(!is.null(text_field)) tech_counts$term[3]`) indicates specialized vocabulary that may limit public accessibility.
+The technical term dictionary covers monetary policy, banking, and economic vocabulary. Sources with higher technical density may be less accessible to general audiences but more precise for expert consumption.
 
 **5. Layered Communication Recommendation**
 
