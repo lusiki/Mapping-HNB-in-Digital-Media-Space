@@ -30,6 +30,10 @@ This repository contains the research materials, code, and analysis for studying
 | H4 | Event-Driven Spikes | Policy events generate 3-5x attention increases |
 | H5 | Euro Transition Effect | Euro adoption = structural break in attention patterns |
 
+## Working Paper
+
+**Central Bank Voice in the Fiscal Conversation** - [View Paper](https://raw.githack.com/lusiki/Mapping-HNB-in-Digital-Media-Space/main/paper/drafts/Central%20Bank%20Voice%20in%20the%20Fiscal%20Conversation.html)
+
 ## Analysis Maps
 
 Interactive HTML visualizations of the HNB digital media landscape:
