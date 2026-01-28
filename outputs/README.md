@@ -16,6 +16,7 @@ Interactive HTML visualizations of the HNB digital media landscape.
 | [Map 5](maps/map5_institutional_attention_gap.html) | Institutional Attention Gap | HNB vs media/influencer engagement (H2) |
 | [Map 6](maps/map6_source_concentration.html) | Source Concentration | Market structure and concentration (H1) |
 | [Map 7](maps/map7_content_amplification.html) | Content Amplification | Information flow and amplification |
+| [Map 8](maps/map8_readability_accessibility.html) | Readability and Accessibility | Content complexity analysis |
 | [Map 9](maps/map9_event_attribution.html) | Event Attribution | Policy event impact analysis (H4) |
 | [Map 10](maps/map10_audience_segmentation.html) | Audience Segmentation | Audience clusters and reach |
 

@@ -43,6 +43,7 @@ Interactive HTML visualizations of the HNB digital media landscape:
 | **Map 5** | Institutional Attention Gap | [View Map](https://raw.githack.com/lusiki/Mapping-HNB-in-Digital-Media-Space/main/outputs/maps/map5_institutional_attention_gap.html) |
 | **Map 6** | Source Concentration and Market Structure | [View Map](https://raw.githack.com/lusiki/Mapping-HNB-in-Digital-Media-Space/main/outputs/maps/map6_source_concentration.html) |
 | **Map 7** | Content Amplification Chains | [View Map](https://raw.githack.com/lusiki/Mapping-HNB-in-Digital-Media-Space/main/outputs/maps/map7_content_amplification.html) |
+| **Map 8** | Readability and Accessibility | [View Map](https://raw.githack.com/lusiki/Mapping-HNB-in-Digital-Media-Space/main/outputs/maps/map8_readability_accessibility.html) |
 | **Map 9** | Event Attribution Analysis | [View Map](https://raw.githack.com/lusiki/Mapping-HNB-in-Digital-Media-Space/main/outputs/maps/map9_event_attribution.html) |
 | **Map 10** | Audience Segmentation | [View Map](https://raw.githack.com/lusiki/Mapping-HNB-in-Digital-Media-Space/main/outputs/maps/map10_audience_segmentation.html) |
 

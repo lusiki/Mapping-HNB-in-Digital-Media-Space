@@ -1028,8 +1028,7 @@ if (!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) {
       "Readability gap (HNB - General)",
       "LIX-REACH correlation",
       "Mean technical term density",
-      "Optimal complexity (max REACH)",
-      "Most common technical term"
+      "Optimal complexity (max REACH)"
     ),
     Value = c(
       sprintf("%.1f", corpus_mean_lix),
@@ -1045,8 +1044,7 @@ if (!is.null(text_field) && sum(!is.na(hnb$lix_score)) > 0) {
       sprintf("%+.1f points", hnb_official_lix - general_media_lix),
       sprintf("ρ = %.3f", cor_lix_reach),
       sprintf("%.2f%%", mean(hnb$technical_density, na.rm = TRUE)),
-      sprintf("LIX ≈ %.0f", optimal_bin$Mean_LIX),
-      tech_counts$term[1]
+      sprintf("LIX ≈ %.0f", optimal_bin$Mean_LIX)
     )
   ) %>%
     kable(col.names = c("Finding", "Value")) %>%
