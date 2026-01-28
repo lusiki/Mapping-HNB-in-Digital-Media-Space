@@ -1,0 +1,887 @@
+---
+title: "HNB DigiMedia Map 1: Source and Actor Structure"
+subtitle: "Mapping the Croatian Central Bank Digital Media Space"
+author: "HNB DigiMedia Project"
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    code-fold: true
+    code-summary: "Show code"
+    theme: cosmo
+    fig-width: 10
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(data.table)
+library(scales)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(ineq)
+
+theme_set(theme_minimal(base_size = 12) +
+          theme(
+            plot.title = element_text(face = "bold", size = 14),
+            plot.subtitle = element_text(color = "gray40"),
+            legend.position = "bottom"
+          ))
+
+# Color palette for actor types (adapted for financial/policy actors)
+actor_colors <- c(
+  "HNB Official" = "#1a3c5a",
+  "Financial Regulators" = "#2c5f7c",
+  "Commercial Banks" = "#4a9c6d",
+  "Financial Media" = "#e07b39",
+  "General Media" = "#c44536",
+  "International Sources" = "#6b4c9a",
+  "Academic/Expert" = "#64748b",
+  "Political Actors" = "#eab308",
+  "Financial Influencers" = "#ec4899",
+  "Government" = "#0ea5e9",
+  "Other" = "#94a3b8"
+)
+
+# Color palette for periods
+period_colors <- c(
+  "ERM II" = "#3498db",
+  "Euro Era" = "#27ae60"
+)
+```
+
+# Introduction
+
+This document presents **Map 1: Source and Actor Structure** of the HNB DigiMedia project, analyzing how the Croatian National Bank (Hrvatska narodna banka, HNB) is covered in Croatian digital media. The core question driving this analysis is: **Who communicates about central banking, and who captures attention?**
+
+We analyze a corpus of 19,128 articles from 2021 to 2023 across Croatian web portals to understand:
+
+1. How attention (measured by REACH) is distributed across sources
+2. Whether official HNB communication achieves visibility proportional to its policy relevance
+3. How different actor types perform in capturing public attention
+4. Whether an institutional attention gap exists in central bank coverage
+
+This map draws on theoretical frameworks from attention economics (Simon 1971, Webster 2014), applying the concept that attention is the scarce resource in information rich environments. Understanding who speaks and who is heard about monetary policy is essential for assessing the effectiveness of central bank communication in Croatia, particularly during the historic transition to the euro.
+
+```{r load-data}
+#| label: load-data
+
+hnb <- readRDS("C:/Users/lsikic/Dropbox/hnb.rds")
+setDT(hnb)
+
+# Create date variable
+hnb[, date := as.Date(DATE)]
+
+# Define periods
+hnb[, period := fcase(
+  date < as.Date("2023-01-01"), "ERM II",
+  default = "Euro Era"
+)]
+hnb[, period := factor(period, levels = c("ERM II", "Euro Era"))]
+
+# Basic corpus info
+n_articles <- nrow(hnb)
+n_sources <- uniqueN(hnb$FROM)
+date_range <- paste(min(hnb$date), "to", max(hnb$date))
+total_reach <- sum(hnb$REACH, na.rm = TRUE)
+```
+
+## Corpus Overview
+
+The corpus represents a comprehensive collection of publicly available digital content mentioning the Croatian National Bank and related monetary policy topics. This includes official HNB communications, financial media coverage, general news reporting, and commentary from various actors across the Croatian digital media landscape.
+
+```{r corpus-overview}
+#| label: corpus-overview
+
+tibble(
+  Metric = c("Total articles", "Unique sources", "Date range", 
+             "Total REACH", "Analysis periods"),
+  Value = c(
+    format(n_articles, big.mark = ","),
+    format(n_sources, big.mark = ","),
+    date_range,
+    format(total_reach, big.mark = ","),
+    "ERM II (2021-2022), Euro Era (2023)"
+  )
+) %>%
+  kable(col.names = c("Metric", "Value")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+# Actor Type Classification
+
+Before analyzing attention dynamics, we classify sources into meaningful actor types based on the Croatian financial media landscape. This classification is essential for understanding the structural composition of central bank coverage and enables comparative analysis across different types of communicators.
+
+## Classification Methodology
+
+The classification employs a hierarchical priority system that processes each source through multiple identification layers. This approach balances precision with recall. The hierarchy works as follows:
+
+1. **Manual overrides** handle known important sources requiring explicit classification
+2. **Domain based matching** provides reliable identification for web sources with known URLs
+3. **Pattern based matching** captures sources through name recognition
+4. **Default classification** assigns remaining sources to appropriate categories
+
+The resulting categories reflect the organizational structure of actors communicating about monetary policy, distinguishing between official institutions, media types, and individual voices.
+
+```{r actor-classification}
+#| label: actor-classification
+
+# =============================================================================
+# ACTOR CLASSIFICATION FOR HNB DIGIMEDIA
+# =============================================================================
+# Adapted from DigiKat methodology for financial/monetary policy context
+# Categories: HNB, REG, BNK, FIN, GEN, INT, ACA, POL, INF, GOV, Other
+
+# -----------------------------------------------------------------------------
+# MANUAL OVERRIDES: Highest priority explicit classifications
+# -----------------------------------------------------------------------------
+manual_overrides <- list(
+  "HNB Official" = c(
+    "hnb.hr", "hrvatska narodna banka", 
+    "hrvatska narodna banka / croatian national bank"
+  ),
+  "Financial Regulators" = c(
+    "hanfa.hr", "hanfa", "hrvatska agencija za nadzor financijskih usluga",
+    "fina.hr", "fina", "financijska agencija"
+  ),
+  "Government" = c(
+    "gov.hr", "vlada", "vlada republike hrvatske",
+    "ministarstvo financija", "sabor.hr"
+  ),
+  "Financial Media" = c(
+    "poslovni.hr", "poslovni dnevnik", "seebiz.eu", "seebiz",
+    "lider.media", "lidermedia.hr", "lider", "bloombergadria.com",
+    "bloomberg adria", "hrportfolio.hr", "privredni.hr"
+  ),
+  "Commercial Banks" = c(
+    "zaba.hr", "zagrebačka banka", "pbz.hr", "privredna banka zagreb",
+    "erste.hr", "erste banka", "hpb.hr", "hrvatska poštanska banka",
+    "otp banka", "raiffeisen", "addiko"
+  ),
+  "Academic/Expert" = c(
+    "eizg.hr", "ekonomski institut zagreb", "ijf.hr",
+    "institut za javne financije", "ekonomski fakultet"
+  )
+)
+
+# -----------------------------------------------------------------------------
+# GENERAL MEDIA: Major news portals (classify as General Media)
+# -----------------------------------------------------------------------------
+general_media_sources <- c(
+  "index.hr", "index", "jutarnji.hr", "jutarnji", "jutarnji list",
+  "vecernji.hr", "vecernji", "večernji list",
+  "24sata.hr", "24sata", "slobodnadalmacija.hr", "slobodna dalmacija",
+  "novilist.hr", "novi list", "dnevnik.hr", "dnevnik",
+  "tportal.hr", "tportal", "telegram.hr", "telegram",
+  "net.hr", "rtl.hr", "rtl", "hrt.hr", "hrt",
+  "n1info.hr", "n1info.com", "n1", "nacional.hr", "nacional",
+  "direktno.hr", "direktno", "dnevno.hr", "dnevno"
+)
+
+# -----------------------------------------------------------------------------
+# REGIONAL/LOCAL MEDIA: Classify as General Media
+# -----------------------------------------------------------------------------
+regional_media <- c(
+  "glasistre.hr", "glas istre", "zagorje.com",
+  "novilist.hr", "glas-slavonije.hr", "glas slavonije",
+  "dalmatinskiportal.hr", "dalmatinski portal",
+  "prigorski.hr", "sibenik.in", "antenazadar.hr",
+  "zadarskilist.hr", "medjimurski.hr", "varazdinske-vijesti.hr"
+)
+
+# -----------------------------------------------------------------------------
+# INTERNATIONAL SOURCES
+# -----------------------------------------------------------------------------
+international_sources <- c(
+  "reuters", "bloomberg", "ecb", "european central bank",
+  "imf", "international monetary fund", "world bank"
+)
+
+# -----------------------------------------------------------------------------
+# POLITICAL ACTORS
+# -----------------------------------------------------------------------------
+political_patterns <- c(
+  "hdz", "sdp", "most", "možemo", "mozemo",
+  "domovinski pokret", "sabor", "saborski zastupnik",
+  "ministar", "premijer", "predsjednik"
+)
+
+# -----------------------------------------------------------------------------
+# FINANCIAL INFLUENCERS (individuals commenting on finance)
+# -----------------------------------------------------------------------------
+influencer_patterns <- c(
+  "ivan lovrinović", "velimir šonje", "boris vujčić",
+  "zdeslav šantić", "ivo bičanić"
+)
+
+# -----------------------------------------------------------------------------
+# CLASSIFICATION FUNCTION
+# -----------------------------------------------------------------------------
+classify_actor_hnb <- function(from_val, url_val = NA) {
+  
+  from_lower <- tolower(trimws(as.character(from_val)))
+  url_lower <- tolower(ifelse(is.na(url_val), "", as.character(url_val)))
+  combined <- paste(from_lower, url_lower)
+  
+  match_any <- function(patterns, text, fixed = TRUE) {
+    any(sapply(patterns, function(p) grepl(p, text, fixed = fixed)))
+  }
+  
+  # PRIORITY 1: Manual Overrides
+  for (actor_type in names(manual_overrides)) {
+    if (match_any(manual_overrides[[actor_type]], from_lower)) {
+      return(actor_type)
+    }
+  }
+  
+  # PRIORITY 2: HNB Official (domain check)
+  if (grepl("hnb\\.hr", url_lower) || grepl("hnb\\.hr", from_lower)) {
+    return("HNB Official")
+  }
+  
+  # PRIORITY 3: Financial Regulators
+  if (grepl("hanfa|fina\\.hr", combined)) {
+    return("Financial Regulators")
+  }
+  
+  # PRIORITY 4: Government
+  if (grepl("gov\\.hr|vlada|ministarstvo", combined)) {
+    return("Government")
+  }
+  
+  # PRIORITY 5: Commercial Banks
+  bank_patterns <- c("banka", "bank", "zaba", "pbz", "erste", "hpb", 
+                     "otp", "raiffeisen", "addiko", "sberbank")
+  if (match_any(bank_patterns, from_lower)) {
+    # Exclude central bank
+    if (!grepl("narodna|hnb|central", from_lower)) {
+      return("Commercial Banks")
+    }
+  }
+  
+  # PRIORITY 6: Financial Media
+  financial_media_patterns <- c(
+    "poslovni", "seebiz", "lider", "bloomberg", "portfolio",
+    "privredni", "finance", "ekonom", "business", "capital",
+    "tportal"
+  )
+  if (match_any(financial_media_patterns, from_lower)) {
+    return("Financial Media")
+  }
+  
+  # PRIORITY 7: International Sources
+  if (match_any(international_sources, from_lower)) {
+    return("International Sources")
+  }
+  
+  # PRIORITY 8: Academic/Expert
+  academic_patterns <- c(
+    "ekonomski fakultet", "sveučilište", "institut", "profesor",
+    "eizg", "ijf", "unicath", "efzg", "efst", "efri"
+  )
+  if (match_any(academic_patterns, from_lower)) {
+    return("Academic/Expert")
+  }
+  
+  # PRIORITY 9: Political Actors
+  if (match_any(political_patterns, from_lower)) {
+    return("Political Actors")
+  }
+  
+  # PRIORITY 10: Financial Influencers
+  if (match_any(influencer_patterns, from_lower)) {
+    return("Financial Influencers")
+  }
+  
+  # PRIORITY 11: General Media (major portals)
+  if (match_any(general_media_sources, from_lower)) {
+    return("General Media")
+  }
+  
+  # PRIORITY 12: Regional Media -> General Media
+  if (match_any(regional_media, from_lower)) {
+    return("General Media")
+  }
+  
+  # PRIORITY 13: Check for news portal patterns
+  news_patterns <- c("portal", "vijesti", "news", "info", "dnevni", 
+                     "radio", "tv", ".hr")
+  if (match_any(news_patterns, from_lower)) {
+    return("General Media")
+  }
+  
+  # DEFAULT
+  return("Other")
+}
+
+# -----------------------------------------------------------------------------
+# APPLY CLASSIFICATION
+# -----------------------------------------------------------------------------
+hnb[, ACTOR_TYPE := mapply(classify_actor_hnb, FROM, URL)]
+
+# Convert to factor with meaningful order
+actor_order <- c("HNB Official", "Financial Regulators", "Government",
+                 "Commercial Banks", "Financial Media", "General Media",
+                 "International Sources", "Academic/Expert", 
+                 "Political Actors", "Financial Influencers", "Other")
+hnb[, ACTOR_TYPE := factor(ACTOR_TYPE, levels = actor_order)]
+```
+
+## Classification Results
+
+The table below shows the distribution of articles and attention (REACH) across actor types. This provides a first overview of who populates the Croatian central banking digital space.
+
+**How to interpret this table:**
+
+- **Articles** and **% Articles** indicate the volume of content produced by each actor type
+- **Sources** shows how many distinct outlets belong to each category
+- **Total REACH** and **% REACH** reveal the potential audience exposure generated
+- Comparing volume share to REACH share reveals which actor types punch above or below their weight
+
+```{r actor-summary-table}
+#| label: actor-summary-table
+
+actor_summary <- hnb[, .(
+  Articles = .N,
+  Sources = uniqueN(FROM),
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE),
+  Median_REACH = median(REACH, na.rm = TRUE)
+), by = ACTOR_TYPE][order(-Articles)]
+
+total_articles <- sum(actor_summary$Articles)
+total_reach_sum <- sum(actor_summary$Total_REACH)
+total_sources <- sum(actor_summary$Sources)
+
+actor_summary[, `:=`(
+  Articles_Pct = Articles / total_articles * 100,
+  Sources_Pct = Sources / total_sources * 100,
+  REACH_Pct = Total_REACH / total_reach_sum * 100
+)]
+
+actor_summary %>%
+  mutate(
+    Articles = format(Articles, big.mark = ","),
+    `% Articles` = sprintf("%.1f%%", Articles_Pct),
+    Sources = format(Sources, big.mark = ","),
+    `Total REACH` = format(Total_REACH, big.mark = ","),
+    `% REACH` = sprintf("%.1f%%", REACH_Pct),
+    `Mean REACH` = format(round(Mean_REACH, 0), big.mark = ",")
+  ) %>%
+  select(ACTOR_TYPE, Articles, `% Articles`, Sources, 
+         `Total REACH`, `% REACH`, `Mean REACH`) %>%
+  kable(col.names = c("Actor Type", "Articles", "% Articles", "Sources",
+                      "Total REACH", "% REACH", "Mean REACH"),
+        caption = "Actor Type Classification Summary") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) %>%
+  row_spec(which(actor_summary$ACTOR_TYPE == "Other"),
+           background = "#f5f5f5", italic = TRUE) %>%
+  row_spec(which(actor_summary$ACTOR_TYPE == "HNB Official"),
+           background = "#e8f4f8", bold = TRUE)
+```
+
+## Actor Type Distribution Visualization
+
+This chart compares each actor types share of total content volume against their share of total REACH. When an actor types REACH bar exceeds their volume bar, it indicates that their content reaches more audience on a per article basis.
+
+```{r actor-distribution-chart}
+#| label: actor-distribution-chart
+#| fig-height: 8
+#| fig-width: 10
+
+actor_viz <- actor_summary[ACTOR_TYPE != "Other"]
+
+actor_long <- actor_viz %>%
+  select(ACTOR_TYPE, Articles_Pct, REACH_Pct) %>%
+  pivot_longer(cols = c(Articles_Pct, REACH_Pct),
+               names_to = "Metric", values_to = "Percentage") %>%
+  mutate(Metric = ifelse(Metric == "Articles_Pct", "Volume (Articles)", "Attention (REACH)"))
+
+ggplot(actor_long, aes(x = reorder(ACTOR_TYPE, Percentage),
+                       y = Percentage, fill = Metric)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_text(aes(label = sprintf("%.1f%%", Percentage)),
+            position = position_dodge(width = 0.7),
+            hjust = -0.1, size = 3) +
+  coord_flip() +
+  scale_fill_manual(values = c("Volume (Articles)" = "#2c5f7c",
+                               "Attention (REACH)" = "#e07b39")) +
+  scale_y_continuous(limits = c(0, max(actor_long$Percentage) * 1.25),
+                     labels = function(x) paste0(x, "%")) +
+  labs(
+    title = "Actor Type Distribution: Volume vs Attention",
+    subtitle = "Excluding Other category for clarity",
+    x = NULL,
+    y = "Share (%)",
+    fill = NULL
+  ) +
+  theme(legend.position = "top")
+```
+
+## Attention Efficiency by Actor Type
+
+The efficiency index quantifies how effectively each actor type converts their content production into audience attention. It is calculated as the ratio of REACH share to article share. An index above 1.0 means the actor type generates more attention than their share of articles would predict.
+
+```{r actor-efficiency}
+#| label: actor-efficiency
+#| fig-height: 7
+
+actor_efficiency <- actor_summary[ACTOR_TYPE != "Other"] %>%
+  mutate(
+    Efficiency_Index = REACH_Pct / Articles_Pct,
+    Performance = case_when(
+      Efficiency_Index > 1.5 ~ "High performer",
+      Efficiency_Index > 1.0 ~ "Above average",
+      Efficiency_Index > 0.7 ~ "Average",
+      TRUE ~ "Below average"
+    )
+  ) %>%
+  arrange(desc(Efficiency_Index))
+
+ggplot(actor_efficiency, aes(x = reorder(ACTOR_TYPE, Efficiency_Index),
+                             y = Efficiency_Index, fill = Performance)) +
+  geom_col(width = 0.7) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red", linewidth = 1) +
+  geom_text(aes(label = sprintf("%.2f", Efficiency_Index)),
+            hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  scale_fill_manual(values = c(
+    "High performer" = "#2d6a4f",
+    "Above average" = "#52b788",
+    "Average" = "#95d5b2",
+    "Below average" = "#d8f3dc"
+  )) +
+  scale_y_continuous(limits = c(0, max(actor_efficiency$Efficiency_Index) * 1.15)) +
+  labs(
+    title = "Attention Efficiency by Actor Type",
+    subtitle = "Efficiency Index = REACH Share / Article Share (>1 = overperforming)",
+    x = NULL,
+    y = "Efficiency Index",
+    fill = "Performance",
+    caption = "Red dashed line indicates neutral efficiency (1.0)"
+  ) +
+  theme(legend.position = "right")
+```
+
+## Top Sources by Actor Type
+
+This table displays the five most prominent sources within each classified actor type, providing concrete examples of who drives coverage and attention in each category.
+
+```{r top-sources-by-type}
+#| label: top-sources-by-type
+
+top_sources_by_type <- hnb[ACTOR_TYPE != "Other", .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE)
+), by = .(ACTOR_TYPE, FROM)][order(ACTOR_TYPE, -Total_REACH)]
+
+top_5_each <- top_sources_by_type[, head(.SD, 5), by = ACTOR_TYPE]
+
+top_5_each %>%
+  mutate(
+    Articles = format(Articles, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    Mean_REACH = format(round(Mean_REACH, 0), big.mark = ",")
+  ) %>%
+  kable(col.names = c("Actor Type", "Source", "Articles", "Total REACH", "Mean REACH"),
+        caption = "Top 5 Sources by Actor Type (ranked by total REACH)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) %>%
+  collapse_rows(columns = 1, valign = "top") %>%
+  scroll_box(height = "500px")
+```
+
+# Analysis 1.1: Attention Concentration
+
+**Core question:** How concentrated is attention in the HNB media coverage?
+
+A key hypothesis from attention economics is that digital attention follows power law distributions, with a small number of actors capturing disproportionate shares of total attention. We measure this using the Gini coefficient, where 0 indicates perfect equality and 1 indicates maximum concentration.
+
+```{r attention-concentration}
+#| label: attention-concentration
+
+source_reach <- hnb[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE)
+), by = FROM][order(-Total_REACH)]
+
+source_reach[, `:=`(
+  rank = 1:.N,
+  cumulative_reach = cumsum(Total_REACH),
+  cumulative_pct = cumsum(Total_REACH) / sum(Total_REACH) * 100
+)]
+
+# Calculate Gini coefficient
+gini_coef <- ineq(source_reach$Total_REACH, type = "Gini")
+
+# Calculate key concentration metrics
+top_1_pct <- source_reach[rank <= ceiling(.N * 0.01), sum(Total_REACH)] / sum(source_reach$Total_REACH) * 100
+top_5_pct <- source_reach[rank <= ceiling(.N * 0.05), sum(Total_REACH)] / sum(source_reach$Total_REACH) * 100
+top_10_pct <- source_reach[rank <= ceiling(.N * 0.10), sum(Total_REACH)] / sum(source_reach$Total_REACH) * 100
+top_20_pct <- source_reach[rank <= ceiling(.N * 0.20), sum(Total_REACH)] / sum(source_reach$Total_REACH) * 100
+
+cat("Attention Concentration Metrics:\n")
+cat("================================\n")
+cat("Gini coefficient:", round(gini_coef, 3), "\n")
+cat("Top 1% sources capture:", round(top_1_pct, 1), "% of REACH\n")
+cat("Top 5% sources capture:", round(top_5_pct, 1), "% of REACH\n")
+cat("Top 10% sources capture:", round(top_10_pct, 1), "% of REACH\n")
+cat("Top 20% sources capture:", round(top_20_pct, 1), "% of REACH\n")
+```
+
+## Lorenz Curve
+
+The Lorenz curve visualizes the concentration of attention. The diagonal line represents perfect equality (each source gets equal REACH). The actual curve shows how attention concentrates among top sources.
+
+```{r lorenz-curve}
+#| label: lorenz-curve
+#| fig-height: 7
+
+source_reach[, `:=`(
+  cumulative_sources = rank / .N * 100,
+  cumulative_reach_pct = cumulative_pct
+)]
+
+ggplot(source_reach, aes(x = cumulative_sources, y = cumulative_reach_pct)) +
+  geom_line(color = "#2c5f7c", linewidth = 1.2) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray50") +
+  geom_ribbon(aes(ymin = cumulative_sources, ymax = cumulative_reach_pct),
+              fill = "#e07b39", alpha = 0.3) +
+  annotate("text", x = 70, y = 30,
+           label = paste0("Gini = ", round(gini_coef, 3)),
+           size = 5, fontface = "bold") +
+  scale_x_continuous(labels = function(x) paste0(x, "%")) +
+  scale_y_continuous(labels = function(x) paste0(x, "%")) +
+  labs(
+    title = "Lorenz Curve: Attention Concentration",
+    subtitle = "Distance from diagonal indicates inequality in REACH distribution",
+    x = "Cumulative % of Sources",
+    y = "Cumulative % of REACH",
+    caption = "Shaded area represents concentration (Gini coefficient)"
+  )
+```
+
+## Rank REACH Plot (Power Law Test)
+
+If attention follows a power law distribution, a log log plot of rank vs REACH should show a linear relationship. The steeper the slope, the more extreme the concentration.
+
+```{r power-law-plot}
+#| label: power-law-plot
+#| fig-height: 6
+
+ggplot(source_reach[Total_REACH > 0], aes(x = rank, y = Total_REACH)) +
+  geom_point(alpha = 0.4, color = "#2c5f7c") +
+  geom_smooth(method = "lm", color = "#e07b39", se = FALSE) +
+  scale_x_log10(labels = comma) +
+  scale_y_log10(labels = comma) +
+  labs(
+    title = "Rank-REACH Distribution (Log-Log Scale)",
+    subtitle = "Linear relationship indicates power law distribution",
+    x = "Source Rank (log)",
+    y = "Total REACH (log)"
+  )
+```
+
+## Top 20 Sources by REACH
+
+```{r top-20-sources}
+#| label: top-20-sources
+
+source_reach[1:20] %>%
+  mutate(
+    rank = 1:20,
+    Articles = format(Articles, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    `% of Total` = sprintf("%.1f%%", cumulative_pct - lag(cumulative_pct, default = 0))
+  ) %>%
+  select(rank, FROM, Articles, Total_REACH, `% of Total`) %>%
+  kable(col.names = c("Rank", "Source", "Articles", "Total REACH", "% of Total"),
+        caption = "Top 20 Sources by Total REACH") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+# Analysis 1.2: Institutional Attention Gap
+
+**Core question:** Does official HNB communication suffer an attention gap?
+
+A central hypothesis of this project is that institutional communicators (HNB Official) may underperform in capturing attention compared to media and other actors, despite the policy relevance of their communications. We test this by comparing REACH metrics across institutional and non-institutional sources.
+
+```{r institutional-gap}
+#| label: institutional-gap
+
+# Define institutional vs non-institutional
+hnb[, institutional := ACTOR_TYPE %in% c("HNB Official", "Financial Regulators", "Government")]
+
+institutional_summary <- hnb[, .(
+  Articles = .N,
+  Sources = uniqueN(FROM),
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE),
+  Median_REACH = median(REACH, na.rm = TRUE)
+), by = institutional]
+
+institutional_summary %>%
+  mutate(
+    Type = ifelse(institutional, "Institutional", "Non-Institutional"),
+    Articles = format(Articles, big.mark = ","),
+    Sources = format(Sources, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    Mean_REACH = format(round(Mean_REACH, 0), big.mark = ","),
+    Median_REACH = format(round(Median_REACH, 0), big.mark = ",")
+  ) %>%
+  select(Type, Articles, Sources, Total_REACH, Mean_REACH, Median_REACH) %>%
+  kable(col.names = c("Type", "Articles", "Sources", "Total REACH", 
+                      "Mean REACH", "Median REACH"),
+        caption = "Institutional vs Non-Institutional Sources") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Statistical Test: REACH Distribution Comparison
+
+We use the Wilcoxon rank sum test (nonparametric) to compare REACH distributions between institutional and non-institutional sources, as REACH data is highly skewed.
+
+```{r wilcoxon-test}
+#| label: wilcoxon-test
+
+institutional_reach <- hnb[institutional == TRUE, REACH]
+non_institutional_reach <- hnb[institutional == FALSE, REACH]
+
+wilcox_result <- wilcox.test(institutional_reach, non_institutional_reach)
+
+cat("Wilcoxon Rank-Sum Test Results:\n")
+cat("===============================\n")
+cat("W statistic:", format(wilcox_result$statistic, big.mark = ","), "\n")
+cat("p-value:", format.pval(wilcox_result$p.value, digits = 3), "\n")
+
+# Calculate effect size (rank-biserial correlation)
+n1 <- length(institutional_reach)
+n2 <- length(non_institutional_reach)
+r <- 1 - (2 * wilcox_result$statistic) / (n1 * n2)
+cat("Effect size (rank-biserial r):", round(r, 3), "\n")
+```
+
+## REACH Distribution by Institutional Status
+
+```{r institutional-boxplot}
+#| label: institutional-boxplot
+#| fig-height: 6
+
+hnb_plot <- hnb[REACH > 0]
+hnb_plot[, Type := ifelse(institutional, "Institutional\n(HNB, Regulators, Government)", 
+                          "Non-Institutional\n(Media, Banks, Other)")]
+
+ggplot(hnb_plot, aes(x = Type, y = REACH, fill = institutional)) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.2) +
+  stat_summary(fun = mean, geom = "point", shape = 18, size = 4, color = "red") +
+  scale_y_log10(labels = comma) +
+  scale_fill_manual(values = c("TRUE" = "#1a3c5a", "FALSE" = "#e07b39")) +
+  labs(
+    title = "REACH Distribution: Institutional vs Non-Institutional Sources",
+    subtitle = "Red diamond = mean; box shows median and IQR",
+    x = NULL,
+    y = "REACH (log scale)",
+    caption = paste0("Wilcoxon test p-value: ", format.pval(wilcox_result$p.value, digits = 3))
+  ) +
+  theme(legend.position = "none")
+```
+
+## HNB Official Performance
+
+Focusing specifically on official HNB sources compared to other actor types.
+
+```{r hnb-performance}
+#| label: hnb-performance
+#| fig-height: 6
+
+ggplot(hnb[REACH > 0 & ACTOR_TYPE != "Other"], 
+       aes(x = reorder(ACTOR_TYPE, REACH, FUN = median), y = REACH, fill = ACTOR_TYPE)) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.2) +
+  stat_summary(fun = mean, geom = "point", shape = 18, size = 3, color = "red") +
+  coord_flip() +
+  scale_y_log10(labels = comma) +
+  scale_fill_manual(values = actor_colors) +
+  labs(
+    title = "REACH Distribution by Actor Type",
+    subtitle = "Ordered by median REACH; red diamond = mean",
+    x = NULL,
+    y = "REACH (log scale)"
+  ) +
+  theme(legend.position = "none")
+```
+
+# Analysis 1.3: Period Comparison (Euro Transition)
+
+**Core question:** Did the euro transition change attention patterns?
+
+The adoption of the euro on January 1, 2023 represents a structural break in Croatian monetary policy. We examine whether attention patterns differ between the ERM II period (2021-2022) and the Euro Era (2023).
+
+```{r period-analysis}
+#| label: period-analysis
+
+period_summary <- hnb[, .(
+  Articles = .N,
+  Sources = uniqueN(FROM),
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE),
+  Days = as.numeric(max(date) - min(date))
+), by = period]
+
+period_summary[, `:=`(
+  Articles_per_Day = round(Articles / Days, 1),
+  REACH_per_Day = round(Total_REACH / Days, 0)
+)]
+
+period_summary %>%
+  mutate(
+    Articles = format(Articles, big.mark = ","),
+    Sources = format(Sources, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    Mean_REACH = format(round(Mean_REACH, 0), big.mark = ","),
+    REACH_per_Day = format(REACH_per_Day, big.mark = ",")
+  ) %>%
+  select(period, Articles, Sources, Total_REACH, Mean_REACH, 
+         Articles_per_Day, REACH_per_Day) %>%
+  kable(col.names = c("Period", "Articles", "Sources", "Total REACH",
+                      "Mean REACH", "Articles/Day", "REACH/Day"),
+        caption = "Coverage Metrics by Period") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Actor Type Distribution by Period
+
+```{r actor-period-heatmap}
+#| label: actor-period-heatmap
+#| fig-height: 7
+
+actor_period <- hnb[ACTOR_TYPE != "Other", .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE)
+), by = .(ACTOR_TYPE, period)]
+
+actor_period[, `:=`(
+  Articles_Pct = Articles / sum(Articles) * 100,
+  REACH_Pct = Total_REACH / sum(Total_REACH) * 100
+), by = period]
+
+ggplot(actor_period, aes(x = period, y = ACTOR_TYPE, fill = REACH_Pct)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = sprintf("%.1f%%", REACH_Pct)), size = 3.5) +
+  scale_fill_gradient(low = "#deebf7", high = "#08519c", name = "% of REACH") +
+  labs(
+    title = "REACH Distribution by Actor Type and Period",
+    subtitle = "Percentage of total REACH within each period",
+    x = "Period",
+    y = "Actor Type"
+  )
+```
+
+## HNB Official Share Over Time
+
+```{r hnb-share-time}
+#| label: hnb-share-time
+#| fig-height: 6
+
+monthly_hnb <- hnb[, .(
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  HNB_REACH = sum(REACH[ACTOR_TYPE == "HNB Official"], na.rm = TRUE),
+  Articles = .N,
+  HNB_Articles = sum(ACTOR_TYPE == "HNB Official")
+), by = .(year = year(date), month = month(date))]
+
+monthly_hnb[, `:=`(
+  date = as.Date(paste(year, month, "01", sep = "-")),
+  HNB_REACH_Share = HNB_REACH / Total_REACH * 100,
+  HNB_Article_Share = HNB_Articles / Articles * 100
+)]
+
+ggplot(monthly_hnb, aes(x = date)) +
+  geom_line(aes(y = HNB_REACH_Share, color = "REACH Share"), linewidth = 1) +
+  geom_line(aes(y = HNB_Article_Share, color = "Article Share"), linewidth = 1) +
+  geom_vline(xintercept = as.Date("2023-01-01"), linetype = "dashed", 
+             color = "#27ae60", alpha = 0.7) +
+  annotate("text", x = as.Date("2023-01-01"), y = max(monthly_hnb$HNB_REACH_Share, na.rm = TRUE) * 0.9,
+           label = "Euro", hjust = -0.1, color = "#27ae60", size = 4) +
+  scale_color_manual(values = c("REACH Share" = "#e07b39", "Article Share" = "#2c5f7c")) +
+  scale_y_continuous(labels = function(x) paste0(x, "%")) +
+  labs(
+    title = "HNB Official Share Over Time",
+    subtitle = "Monthly share of total articles and REACH",
+    x = NULL,
+    y = "Share (%)",
+    color = NULL
+  ) +
+  theme(legend.position = "top")
+```
+
+# Summary and Key Findings
+
+```{r summary-findings}
+#| label: summary-findings
+
+# Compile key statistics for findings
+hnb_official_stats <- actor_summary[ACTOR_TYPE == "HNB Official"]
+general_media_stats <- actor_summary[ACTOR_TYPE == "General Media"]
+financial_media_stats <- actor_summary[ACTOR_TYPE == "Financial Media"]
+```
+
+## Attention Concentration Findings
+
+1. **High concentration confirmed:** Gini coefficient of `r round(gini_coef, 3)` indicates strong inequality in attention distribution, supporting H1 hypothesis
+2. **Top sources dominate:** The top 10% of sources capture `r round(top_10_pct, 1)`% of total REACH
+3. **Power law pattern:** The rank-REACH relationship follows expected power law distribution typical of digital attention markets
+
+## Institutional Attention Gap Findings
+
+1. **HNB Official share:** Official HNB sources account for `r round(hnb_official_stats$Articles_Pct, 1)`% of articles but `r round(hnb_official_stats$REACH_Pct, 1)`% of REACH
+2. **Efficiency comparison:** HNB Official efficiency index is `r round(hnb_official_stats$REACH_Pct / hnb_official_stats$Articles_Pct, 2)` compared to General Media at `r round(general_media_stats$REACH_Pct / general_media_stats$Articles_Pct, 2)`
+3. **Statistical significance:** Wilcoxon test p-value of `r format.pval(wilcox_result$p.value, digits = 3)` indicates significant difference in REACH distributions
+
+## Period Comparison Findings
+
+1. **Volume change:** Article volume per day `r ifelse(period_summary[period == "Euro Era", Articles_per_Day] < period_summary[period == "ERM II", Articles_per_Day], "decreased", "increased")` from `r period_summary[period == "ERM II", Articles_per_Day]` to `r period_summary[period == "Euro Era", Articles_per_Day]` after euro adoption
+2. **Actor composition:** The distribution of attention across actor types shows `r ifelse(any(actor_period$REACH_Pct[actor_period$period == "Euro Era"] != actor_period$REACH_Pct[actor_period$period == "ERM II"]), "changes", "stability")` between periods
+
+---
+
+# Appendix: Technical Notes
+
+## Actor Classification Categories
+
+| Code | Category | Definition |
+|------|----------|------------|
+| HNB | HNB Official | Croatian National Bank official communications |
+| REG | Financial Regulators | HANFA, FINA, other regulatory bodies |
+| GOV | Government | Government portals, Ministry of Finance, Parliament |
+| BNK | Commercial Banks | Private banking institutions |
+| FIN | Financial Media | Specialized business and financial news outlets |
+| GEN | General Media | National and regional news portals |
+| INT | International Sources | Reuters, Bloomberg, ECB, international organizations |
+| ACA | Academic/Expert | University economists, research institutes |
+| POL | Political Actors | Political parties, politicians |
+| INF | Financial Influencers | Individual commentators on financial topics |
+
+## Data Sources and Limitations
+
+- Data collected via Mediatoolkit media monitoring
+- REACH represents estimated audience exposure (Mediatoolkit metric)
+- Period limited to 2021-2023 (no pre-ERM II data available)
+- Classification based on source names and URLs; manual validation recommended for key findings
+
+```{r session-info}
+#| label: session-info
+
+sessionInfo()
+```

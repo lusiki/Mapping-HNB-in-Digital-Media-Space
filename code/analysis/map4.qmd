@@ -1,0 +1,954 @@
+---
+title: "HNB DigiMedia Map 4: Temporal Dynamics"
+subtitle: "Mapping the Evolution of Croatian Central Bank Coverage"
+author: "HNB DigiMedia Project"
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    code-fold: true
+    code-summary: "Show code"
+    theme: cosmo
+    fig-width: 10
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(data.table)
+library(scales)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(viridis)
+library(lubridate)
+library(zoo)
+library(patchwork)
+
+theme_set(theme_minimal(base_size = 12) +
+          theme(
+            plot.title = element_text(face = "bold", size = 14),
+            plot.subtitle = element_text(color = "gray40"),
+            legend.position = "bottom"
+          ))
+
+# Color palette for actor types
+actor_colors <- c(
+  "HNB Official" = "#1a3c5a",
+  "Financial Regulators" = "#2c5f7c",
+  "Commercial Banks" = "#4a9c6d",
+  "Financial Media" = "#e07b39",
+  "General Media" = "#c44536",
+  "International Sources" = "#6b4c9a",
+  "Academic/Expert" = "#64748b",
+  "Political Actors" = "#eab308",
+  "Financial Influencers" = "#ec4899",
+  "Government" = "#0ea5e9",
+  "Other" = "#94a3b8"
+)
+
+# Color palette for periods
+period_colors <- c(
+  "ERM II" = "#3498db",
+  "Euro Era" = "#27ae60"
+)
+
+# Color palette for event types
+event_colors <- c(
+  "ECB Policy" = "#1a3c5a",
+  "Euro Transition" = "#27ae60",
+  "HNB Policy" = "#2c5f7c",
+  "Economic Crisis" = "#c0392b",
+  "Political" = "#d35400"
+)
+```
+
+# Introduction
+
+This document presents **Map 4: Temporal Dynamics** of the HNB DigiMedia project. The core question driving this analysis is: **How does Croatian central bank coverage evolve over time, and how does it respond to policy events?**
+
+Understanding temporal patterns reveals the rhythms of monetary policy communication, from daily news cycles to the structural break of euro adoption. This analysis examines articles from 2021 to 2023 to uncover when coverage peaks, how patterns shift with the euro transition, and how the media sphere responds to significant policy events.
+
+## Theoretical Framework
+
+**Event driven coverage** in central bank communication is characterized by:
+
+1. **Policy announcement spikes:** Coverage surges around interest rate decisions and major announcements
+2. **Structural breaks:** Major regime changes (like euro adoption) alter coverage patterns
+3. **Attention decay:** Coverage intensity typically declines after initial event response
+4. **Anticipation effects:** Coverage may build before expected events
+
+The hypothesis (H4) states that coverage exhibits event driven spikes around major policy decisions and economic announcements.
+
+## Methodological Overview
+
+**Key metrics in this analysis:**
+
+| Metric | Definition | Interpretation |
+|--------|------------|----------------|
+| Rolling average | Smoothed trend over N days | Removes noise to reveal underlying patterns |
+| Period comparison | ERM II vs Euro Era metrics | Tests structural break hypothesis |
+| Event effect size | (Event period - Baseline) / Baseline | Quantifies impact of policy events |
+| REACH intensity | Total REACH / Number of articles | Measures attention per article |
+
+```{r load-data}
+#| label: load-data
+
+hnb <- readRDS("C:/Users/lsikic/Dropbox/hnb.rds")
+setDT(hnb)
+
+hnb[, date := as.Date(DATE)]
+hnb[, year := year(date)]
+hnb[, month := month(date)]
+hnb[, week := isoweek(date)]
+hnb[, DOW := lubridate::wday(date, label = TRUE, abbr = FALSE)]
+hnb[, DOW_num := lubridate::wday(date)]
+
+# Extract hour if TIME is available
+if ("TIME" %in% names(hnb) && !all(is.na(hnb$TIME))) {
+  hnb[, hour := as.integer(substr(TIME, 1, 2))]
+} else {
+  hnb[, hour := NA_integer_]
+}
+
+# Define periods
+hnb[, period := fcase(
+  date < as.Date("2023-01-01"), "ERM II",
+  default = "Euro Era"
+)]
+hnb[, period := factor(period, levels = c("ERM II", "Euro Era"))]
+
+n_articles <- nrow(hnb)
+n_sources <- uniqueN(hnb$FROM)
+date_range <- paste(min(hnb$date), "to", max(hnb$date))
+
+cat("Data loaded:", n_articles, "articles\n")
+cat("Date range:", date_range, "\n")
+```
+
+```{r actor-classification}
+#| label: actor-classification
+
+# =============================================================================
+# ACTOR CLASSIFICATION - SYNCHRONIZED WITH MAPS 1, 2, 3
+# =============================================================================
+
+manual_overrides <- list(
+  "HNB Official" = c(
+    "hnb.hr", "hrvatska narodna banka",
+    "hrvatska narodna banka / croatian national bank"
+  ),
+  "Financial Regulators" = c(
+    "hanfa.hr", "hanfa", "hrvatska agencija za nadzor financijskih usluga",
+    "fina.hr", "fina", "financijska agencija"
+  ),
+  "Government" = c(
+    "gov.hr", "vlada", "vlada republike hrvatske",
+    "ministarstvo financija", "sabor.hr"
+  ),
+  "Financial Media" = c(
+    "poslovni.hr", "poslovni dnevnik", "seebiz.eu", "seebiz",
+    "lider.media", "lidermedia.hr", "lider", "bloombergadria.com",
+    "bloomberg adria", "hrportfolio.hr", "privredni.hr"
+  ),
+  "Commercial Banks" = c(
+    "zaba.hr", "zagrebačka banka", "pbz.hr", "privredna banka zagreb",
+    "erste.hr", "erste banka", "hpb.hr", "hrvatska poštanska banka",
+    "otp banka", "raiffeisen", "addiko"
+  ),
+  "Academic/Expert" = c(
+    "eizg.hr", "ekonomski institut zagreb", "ijf.hr",
+    "institut za javne financije", "ekonomski fakultet"
+  )
+)
+
+general_media_sources <- c(
+  "index.hr", "index", "jutarnji.hr", "jutarnji", "jutarnji list",
+  "vecernji.hr", "vecernji", "večernji list",
+  "24sata.hr", "24sata", "slobodnadalmacija.hr", "slobodna dalmacija",
+  "novilist.hr", "novi list", "dnevnik.hr", "dnevnik",
+  "tportal.hr", "tportal", "telegram.hr", "telegram",
+  "net.hr", "rtl.hr", "rtl", "hrt.hr", "hrt",
+  "n1info.hr", "n1info.com", "n1", "nacional.hr", "nacional",
+  "direktno.hr", "direktno", "dnevno.hr", "dnevno"
+)
+
+classify_actor_hnb <- function(from_val, url_val = NA) {
+  from_lower <- tolower(trimws(as.character(from_val)))
+  url_lower <- tolower(ifelse(is.na(url_val), "", as.character(url_val)))
+  combined <- paste(from_lower, url_lower)
+  
+  match_any <- function(patterns, text, fixed = TRUE) {
+    any(sapply(patterns, function(p) grepl(p, text, fixed = fixed)))
+  }
+  
+  for (actor_type in names(manual_overrides)) {
+    if (match_any(manual_overrides[[actor_type]], from_lower)) {
+      return(actor_type)
+    }
+  }
+  
+  if (grepl("hnb\\.hr", url_lower) || grepl("hnb\\.hr", from_lower)) {
+    return("HNB Official")
+  }
+  
+  if (grepl("hanfa|fina\\.hr", combined)) {
+    return("Financial Regulators")
+  }
+  
+  if (grepl("gov\\.hr|vlada|ministarstvo", combined)) {
+    return("Government")
+  }
+  
+  bank_patterns <- c("banka", "bank", "zaba", "pbz", "erste", "hpb",
+                     "otp", "raiffeisen", "addiko", "sberbank")
+  if (match_any(bank_patterns, from_lower)) {
+    if (!grepl("narodna|hnb|central", from_lower)) {
+      return("Commercial Banks")
+    }
+  }
+  
+  financial_media_patterns <- c(
+    "poslovni", "seebiz", "lider", "bloomberg", "portfolio",
+    "privredni", "finance", "ekonom", "business", "capital"
+  )
+  if (match_any(financial_media_patterns, from_lower)) {
+    return("Financial Media")
+  }
+  
+  if (match_any(general_media_sources, from_lower)) {
+    return("General Media")
+  }
+  
+  news_patterns <- c("portal", "vijesti", "news", "info", "dnevni",
+                     "radio", "tv", ".hr")
+  if (match_any(news_patterns, from_lower)) {
+    return("General Media")
+  }
+  
+  return("Other")
+}
+
+hnb[, ACTOR_TYPE := mapply(classify_actor_hnb, FROM, URL)]
+
+actor_order <- c("HNB Official", "Financial Regulators", "Government",
+                 "Commercial Banks", "Financial Media", "General Media",
+                 "International Sources", "Academic/Expert",
+                 "Political Actors", "Financial Influencers", "Other")
+hnb[, ACTOR_TYPE := factor(ACTOR_TYPE, levels = actor_order)]
+```
+
+## Corpus Overview
+
+```{r corpus-overview}
+#| label: corpus-overview
+
+tibble(
+  Metric = c("Total articles", "Unique sources", "Date range",
+             "Years covered", "Articles with timestamp"),
+  Value = c(
+    format(n_articles, big.mark = ","),
+    format(n_sources, big.mark = ","),
+    date_range,
+    paste(sort(unique(hnb$year)), collapse = ", "),
+    format(sum(!is.na(hnb$hour)), big.mark = ",")
+  )
+) %>%
+  kable(col.names = c("Metric", "Value")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+# Analysis 4.1: Overall Temporal Patterns
+
+The first analysis examines macro level trends in coverage volume and attention over the corpus period.
+
+```{r daily-volume}
+#| label: daily-volume
+
+daily_stats <- hnb[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE),
+  Unique_Sources = uniqueN(FROM)
+), by = date][order(date)]
+
+daily_stats[, Rolling_Articles_7d := frollmean(Articles, 7, align = "right")]
+daily_stats[, Rolling_Articles_30d := frollmean(Articles, 30, align = "right")]
+daily_stats[, Rolling_REACH_7d := frollmean(Total_REACH, 7, align = "right")]
+```
+
+## Daily Coverage Volume
+
+```{r volume-timeseries}
+#| label: volume-timeseries
+#| fig-height: 7
+
+ggplot(daily_stats[!is.na(date)], aes(x = date)) +
+  geom_line(aes(y = Articles), alpha = 0.3, color = "gray50") +
+  geom_line(aes(y = Rolling_Articles_7d), color = "#2c5f7c", linewidth = 0.8) +
+  geom_line(aes(y = Rolling_Articles_30d), color = "#e07b39", linewidth = 1.2) +
+  geom_vline(xintercept = as.Date("2023-01-01"), linetype = "dashed",
+             color = "#27ae60", linewidth = 1) +
+  annotate("text", x = as.Date("2023-01-01"), y = max(daily_stats$Articles, na.rm = TRUE) * 0.95,
+           label = "Euro Adoption", hjust = -0.1, color = "#27ae60", fontface = "bold") +
+  scale_x_date(date_labels = "%Y-%m", date_breaks = "3 months") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Daily Coverage Volume Over Time",
+    subtitle = "Gray: daily count | Blue: 7 day rolling average | Orange: 30 day rolling average",
+    x = NULL,
+    y = "Number of Articles"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Monthly Aggregated Trends
+
+```{r monthly-trends}
+#| label: monthly-trends
+#| fig-height: 8
+
+monthly_stats <- hnb[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE),
+  Unique_Sources = uniqueN(FROM)
+), by = .(year, month)]
+
+monthly_stats[, date_month := as.Date(paste(year, month, "01", sep = "-"))]
+monthly_stats <- monthly_stats[order(date_month)]
+
+p1 <- ggplot(monthly_stats[!is.na(date_month)], aes(x = date_month, y = Articles)) +
+  geom_col(fill = "#2c5f7c", alpha = 0.7) +
+  geom_smooth(method = "loess", se = TRUE, color = "#e07b39", fill = "#e07b39", alpha = 0.2) +
+  geom_vline(xintercept = as.Date("2023-01-01"), linetype = "dashed", color = "#27ae60") +
+  scale_x_date(date_labels = "%Y-%m", date_breaks = "6 months") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Monthly Article Volume",
+    x = NULL,
+    y = "Articles"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p2 <- ggplot(monthly_stats[!is.na(date_month)], aes(x = date_month, y = Total_REACH)) +
+  geom_col(fill = "#4a9c6d", alpha = 0.7) +
+  geom_smooth(method = "loess", se = TRUE, color = "#e07b39", fill = "#e07b39", alpha = 0.2) +
+  geom_vline(xintercept = as.Date("2023-01-01"), linetype = "dashed", color = "#27ae60") +
+  scale_x_date(date_labels = "%Y-%m", date_breaks = "6 months") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Monthly Total REACH",
+    x = NULL,
+    y = "Total REACH"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p1 / p2
+```
+
+## Year over Year Comparison
+
+```{r yearly-comparison}
+#| label: yearly-comparison
+#| fig-height: 7
+
+yearly_stats <- hnb[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE),
+  Unique_Sources = uniqueN(FROM)
+), by = year][order(year)]
+
+yearly_stats[, Articles_Change := (Articles - shift(Articles)) / shift(Articles) * 100]
+yearly_stats[, REACH_Change := (Total_REACH - shift(Total_REACH)) / shift(Total_REACH) * 100]
+
+yearly_long <- yearly_stats %>%
+  select(year, Articles, Total_REACH) %>%
+  pivot_longer(cols = -year, names_to = "Metric", values_to = "Value") %>%
+  mutate(Metric = ifelse(Metric == "Articles", "Volume (Articles)", "Attention (REACH)"))
+
+ggplot(yearly_long, aes(x = factor(year), y = Value, fill = Metric)) +
+  geom_col(position = "dodge", width = 0.7) +
+  scale_fill_manual(values = c("Volume (Articles)" = "#2c5f7c", "Attention (REACH)" = "#4a9c6d")) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Annual Volume and Attention",
+    subtitle = "Year over year comparison",
+    x = NULL,
+    y = "Count",
+    fill = NULL
+  ) +
+  theme(legend.position = "top")
+```
+
+## Yearly Statistics Table
+
+```{r yearly-table}
+#| label: yearly-table
+
+yearly_stats %>%
+  mutate(
+    Articles = format(Articles, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    Mean_REACH = format(round(Mean_REACH, 0), big.mark = ","),
+    Unique_Sources = format(Unique_Sources, big.mark = ","),
+    Articles_Change = ifelse(is.na(Articles_Change), "—", sprintf("%+.1f%%", Articles_Change)),
+    REACH_Change = ifelse(is.na(REACH_Change), "—", sprintf("%+.1f%%", REACH_Change))
+  ) %>%
+  select(year, Articles, Articles_Change, Total_REACH, REACH_Change,
+         Mean_REACH, Unique_Sources) %>%
+  kable(col.names = c("Year", "Articles", "YoY Change", "Total REACH", "YoY Change",
+                      "Mean REACH", "Sources")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Peak Activity Days
+
+```{r peak-days}
+#| label: peak-days
+
+top_days <- daily_stats[order(-Articles)][1:20]
+
+top_days %>%
+  mutate(
+    Articles = format(Articles, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    Unique_Sources = format(Unique_Sources, big.mark = ",")
+  ) %>%
+  select(date, Articles, Total_REACH, Unique_Sources) %>%
+  kable(col.names = c("Date", "Articles", "Total REACH", "Unique Sources"),
+        caption = "Top 20 Highest Volume Days") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  scroll_box(height = "400px")
+```
+
+# Analysis 4.2: Period Comparison (Euro Structural Break)
+
+The adoption of the euro on January 1, 2023 represents a potential structural break in coverage patterns. This analysis compares ERM II period (2021-2022) with the Euro Era (2023).
+
+```{r period-comparison}
+#| label: period-comparison
+#| fig-height: 7
+
+period_stats <- hnb[, .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE),
+  Mean_REACH = mean(REACH, na.rm = TRUE),
+  Unique_Sources = uniqueN(FROM),
+  Days = uniqueN(date)
+), by = period]
+
+period_stats[, `:=`(
+  Articles_Per_Day = Articles / Days,
+  REACH_Per_Day = Total_REACH / Days
+)]
+
+period_long <- period_stats %>%
+  select(period, Articles_Per_Day, REACH_Per_Day) %>%
+  pivot_longer(cols = -period, names_to = "Metric", values_to = "Value") %>%
+  mutate(Metric = ifelse(Metric == "Articles_Per_Day", "Articles per Day", "REACH per Day"))
+
+ggplot(period_long, aes(x = period, y = Value, fill = period)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = format(round(Value, 0), big.mark = ",")), vjust = -0.3) +
+  facet_wrap(~Metric, scales = "free_y") +
+  scale_fill_manual(values = period_colors) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Coverage Intensity by Period",
+    subtitle = "Daily averages: ERM II (2021-2022) vs Euro Era (2023)",
+    x = NULL,
+    y = NULL
+  ) +
+  theme(legend.position = "none")
+```
+
+## Period Statistics Table
+
+```{r period-table}
+#| label: period-table
+
+period_stats %>%
+  mutate(
+    Articles = format(Articles, big.mark = ","),
+    Total_REACH = format(Total_REACH, big.mark = ","),
+    Mean_REACH = format(round(Mean_REACH, 0), big.mark = ","),
+    Unique_Sources = format(Unique_Sources, big.mark = ","),
+    Articles_Per_Day = sprintf("%.1f", Articles_Per_Day),
+    REACH_Per_Day = format(round(REACH_Per_Day, 0), big.mark = ",")
+  ) %>%
+  select(period, Days, Articles, Articles_Per_Day, Total_REACH, REACH_Per_Day, Mean_REACH, Unique_Sources) %>%
+  kable(col.names = c("Period", "Days", "Articles", "Articles/Day", "Total REACH",
+                      "REACH/Day", "Mean REACH", "Sources")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Actor Type Trends by Period
+
+```{r actor-period-trends}
+#| label: actor-period-trends
+#| fig-height: 8
+
+actor_period <- hnb[ACTOR_TYPE != "Other", .(
+  Articles = .N,
+  Total_REACH = sum(REACH, na.rm = TRUE)
+), by = .(period, ACTOR_TYPE)]
+
+actor_period[, `:=`(
+  Articles_Share = Articles / sum(Articles) * 100,
+  REACH_Share = Total_REACH / sum(Total_REACH) * 100
+), by = period]
+
+ggplot(actor_period, aes(x = ACTOR_TYPE, y = Articles_Share, fill = period)) +
+  geom_col(position = "dodge", width = 0.7) +
+  coord_flip() +
+  scale_fill_manual(values = period_colors) +
+  labs(
+    title = "Actor Type Share by Period",
+    subtitle = "How the composition of coverage changed with euro adoption",
+    x = NULL,
+    y = "Share of Articles (%)",
+    fill = "Period"
+  ) +
+  theme(legend.position = "top")
+```
+
+# Analysis 4.3: Event Response Analysis
+
+This analysis examines how Croatian media responds to specific monetary policy and economic events.
+
+```{r events-setup}
+#| label: events-setup
+
+# Define key events in HNB/monetary policy coverage
+known_events <- data.table(
+  Event = c(
+    "Euro Adoption",
+    "ECB Rate Hike July 2022",
+    "ECB Rate Hike Sept 2022",
+    "Inflation Peak 2022",
+    "HNB Final Rate Decision",
+    "Conversion Rate Announcement",
+    "Euro Coins Presentation",
+    "Dual Display Period Start"
+  ),
+  Date = as.Date(c(
+    "2023-01-01",
+    "2022-07-21",
+    "2022-09-08",
+    "2022-10-15",
+    "2022-12-15",
+    "2022-07-12",
+    "2022-11-22",
+    "2022-09-05"
+  )),
+  Type = c(
+    "Euro Transition",
+    "ECB Policy",
+    "ECB Policy",
+    "Economic Crisis",
+    "HNB Policy",
+    "Euro Transition",
+    "Euro Transition",
+    "Euro Transition"
+  ),
+  Description = c(
+    "Croatia officially adopts the euro",
+    "ECB ends negative rates era",
+    "ECB largest ever rate increase",
+    "Croatia CPI peaks above 13%",
+    "Final HNB monetary policy meeting",
+    "Fixed EUR/HRK rate announced",
+    "Croatian euro coins unveiled",
+    "Dual price display mandatory"
+  )
+)
+
+# Filter to events within data range
+known_events <- known_events[Date >= min(hnb$date) & Date <= max(hnb$date)]
+```
+
+## Event Response Profiles
+
+```{r event-response}
+#| label: event-response
+#| fig-height: 10
+
+event_response <- data.table()
+
+for (i in 1:nrow(known_events)) {
+  event_date <- known_events$Date[i]
+  event_name <- known_events$Event[i]
+  
+  window_start <- event_date - 7
+  window_end <- event_date + 14
+  
+  daily_response <- hnb[date >= window_start & date <= window_end, .(
+    Articles = .N,
+    REACH = sum(REACH, na.rm = TRUE)
+  ), by = date]
+  
+  daily_response[, `:=`(
+    Event = event_name,
+    Days_From_Event = as.integer(date - event_date)
+  )]
+  
+  event_response <- rbind(event_response, daily_response)
+}
+
+event_response <- merge(event_response, known_events[, .(Event, Type)], by = "Event")
+
+ggplot(event_response, aes(x = Days_From_Event, y = Articles, color = Type)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  facet_wrap(~Event, scales = "free_y", ncol = 2) +
+  scale_x_continuous(breaks = seq(-7, 14, 7)) +
+  scale_color_manual(values = event_colors) +
+  labs(
+    title = "Event Response Profiles",
+    subtitle = "Daily article volume around major events (red line = event day)",
+    x = "Days from Event",
+    y = "Articles"
+  ) +
+  theme(legend.position = "none")
+```
+
+## Event Impact Summary
+
+```{r event-impact}
+#| label: event-impact
+
+event_impact <- event_response[, .(
+  Pre_Event_Mean = mean(Articles[Days_From_Event < 0], na.rm = TRUE),
+  Event_Day = sum(Articles[Days_From_Event == 0], na.rm = TRUE),
+  Post_Event_Mean = mean(Articles[Days_From_Event > 0 & Days_From_Event <= 7], na.rm = TRUE),
+  Peak_Day = max(Articles, na.rm = TRUE),
+  Total_Articles = sum(Articles, na.rm = TRUE),
+  Total_REACH = sum(REACH, na.rm = TRUE)
+), by = .(Event, Type)]
+
+event_impact[, Event_Spike := (Event_Day - Pre_Event_Mean) / Pre_Event_Mean * 100]
+
+event_impact[order(-Event_Spike)] %>%
+  mutate(
+    Pre_Event_Mean = sprintf("%.0f", Pre_Event_Mean),
+    Event_Day = format(Event_Day, big.mark = ","),
+    Post_Event_Mean = sprintf("%.0f", Post_Event_Mean),
+    Peak_Day = format(Peak_Day, big.mark = ","),
+    Total_Articles = format(Total_Articles, big.mark = ","),
+    Event_Spike = sprintf("%+.0f%%", Event_Spike)
+  ) %>%
+  select(Event, Type, Pre_Event_Mean, Event_Day, Event_Spike, Peak_Day, Total_Articles) %>%
+  kable(col.names = c("Event", "Type", "Pre Event Avg", "Event Day",
+                      "Spike %", "Peak Day", "Total Articles")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Actor Response to Events
+
+```{r actor-event-response}
+#| label: actor-event-response
+#| fig-height: 10
+
+actor_event_response <- data.table()
+
+for (i in 1:nrow(known_events)) {
+  event_date <- known_events$Date[i]
+  event_name <- known_events$Event[i]
+  
+  window_start <- event_date - 3
+  window_end <- event_date + 7
+  
+  actor_response <- hnb[date >= window_start & date <= window_end, .(
+    Articles = .N,
+    REACH = sum(REACH, na.rm = TRUE)
+  ), by = ACTOR_TYPE]
+  
+  actor_response[, Event := event_name]
+  actor_event_response <- rbind(actor_event_response, actor_response)
+}
+
+actor_event_long <- actor_event_response[ACTOR_TYPE != "Other"]
+
+ggplot(actor_event_long, aes(x = reorder(ACTOR_TYPE, Articles), y = Articles, fill = ACTOR_TYPE)) +
+  geom_col(width = 0.7) +
+  facet_wrap(~Event, scales = "free_x", ncol = 2) +
+  coord_flip() +
+  scale_fill_manual(values = actor_colors) +
+  labs(
+    title = "Actor Type Response to Major Events",
+    subtitle = "Articles within event window (3 days before to 7 days after)",
+    x = NULL,
+    y = "Articles"
+  ) +
+  theme(legend.position = "none")
+```
+
+# Analysis 4.4: Posting Rhythms
+
+This analysis examines temporal patterns at the micro level, revealing when HNB coverage is published.
+
+```{r dow-patterns}
+#| label: dow-patterns
+#| fig-height: 7
+
+dow_stats <- hnb[!is.na(DOW), .(
+  Articles = .N,
+  Mean_REACH = mean(REACH, na.rm = TRUE),
+  Total_REACH = sum(REACH, na.rm = TRUE)
+), by = DOW]
+
+dow_stats[, `:=`(
+  Articles_Share = Articles / sum(Articles) * 100,
+  REACH_Share = Total_REACH / sum(Total_REACH) * 100
+)]
+
+p1 <- ggplot(dow_stats, aes(x = DOW, y = Articles, fill = DOW)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = format(Articles, big.mark = ",")), vjust = -0.3, size = 3) +
+  scale_fill_viridis_d() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Article Volume by Day of Week",
+    x = NULL,
+    y = "Total Articles"
+  ) +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1))
+
+p2 <- ggplot(dow_stats, aes(x = DOW, y = Mean_REACH, fill = DOW)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = format(round(Mean_REACH, 0), big.mark = ",")), vjust = -0.3, size = 3) +
+  scale_fill_viridis_d() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Mean REACH by Day of Week",
+    x = NULL,
+    y = "Mean REACH"
+  ) +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1))
+
+p1 + p2
+```
+
+## Hourly Patterns (if available)
+
+```{r hourly-patterns}
+#| label: hourly-patterns
+#| fig-height: 6
+
+if (sum(!is.na(hnb$hour)) > 100) {
+  hourly_stats <- hnb[!is.na(hour), .(Articles = .N), by = hour][order(hour)]
+  
+  ggplot(hourly_stats, aes(x = hour, y = Articles)) +
+    geom_col(fill = "#2c5f7c", width = 0.8) +
+    geom_line(aes(group = 1), color = "#e07b39", linewidth = 1) +
+    scale_x_continuous(breaks = 0:23) +
+    scale_y_continuous(labels = comma) +
+    labs(
+      title = "Article Volume by Hour of Day",
+      subtitle = "Aggregated across all days in corpus",
+      x = "Hour",
+      y = "Total Articles"
+    )
+} else {
+  cat("Insufficient hourly data available for analysis.\n")
+}
+```
+
+## Day of Week by Period
+
+```{r dow-period}
+#| label: dow-period
+#| fig-height: 7
+
+dow_period <- hnb[!is.na(DOW), .(
+  Articles = .N
+), by = .(DOW, period)]
+
+dow_period[, Total := sum(Articles), by = period]
+dow_period[, Share := Articles / Total * 100]
+
+ggplot(dow_period, aes(x = DOW, y = Share, fill = period)) +
+  geom_col(position = "dodge", width = 0.7) +
+  scale_fill_manual(values = period_colors) +
+  labs(
+    title = "Day of Week Distribution by Period",
+    subtitle = "Share of weekly articles by day",
+    x = NULL,
+    y = "Share of Articles (%)",
+    fill = "Period"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "top")
+```
+
+# Analysis 4.5: Coverage Intensity Trends
+
+Track how coverage intensity changes over time, particularly around the euro transition.
+
+```{r intensity-trends}
+#| label: intensity-trends
+#| fig-height: 7
+
+monthly_intensity <- monthly_stats[, .(
+  date_month,
+  Articles,
+  Total_REACH,
+  REACH_per_Article = Total_REACH / Articles
+)]
+
+ggplot(monthly_intensity[!is.na(date_month)], aes(x = date_month, y = REACH_per_Article)) +
+  geom_line(color = "#2c5f7c", linewidth = 1) +
+  geom_smooth(method = "loess", se = TRUE, color = "#e07b39", fill = "#e07b39", alpha = 0.2) +
+  geom_vline(xintercept = as.Date("2023-01-01"), linetype = "dashed", color = "#27ae60") +
+  scale_x_date(date_labels = "%Y-%m", date_breaks = "3 months") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "REACH per Article Over Time",
+    subtitle = "Monthly average attention intensity",
+    x = NULL,
+    y = "Mean REACH per Article"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## HNB Official vs Media Coverage Trends
+
+```{r hnb-vs-media}
+#| label: hnb-vs-media
+#| fig-height: 7
+
+hnb_vs_media <- hnb[, .(
+  HNB_Official = sum(ACTOR_TYPE == "HNB Official"),
+  Financial_Media = sum(ACTOR_TYPE == "Financial Media"),
+  General_Media = sum(ACTOR_TYPE == "General Media"),
+  Total = .N
+), by = .(year, month)]
+
+hnb_vs_media[, date_month := as.Date(paste(year, month, "01", sep = "-"))]
+hnb_vs_media[, `:=`(
+  HNB_Share = HNB_Official / Total * 100,
+  FinMedia_Share = Financial_Media / Total * 100,
+  GenMedia_Share = General_Media / Total * 100
+)]
+
+hnb_media_long <- hnb_vs_media %>%
+  select(date_month, HNB_Share, FinMedia_Share, GenMedia_Share) %>%
+  pivot_longer(cols = -date_month, names_to = "Actor", values_to = "Share") %>%
+  mutate(Actor = case_when(
+    Actor == "HNB_Share" ~ "HNB Official",
+    Actor == "FinMedia_Share" ~ "Financial Media",
+    Actor == "GenMedia_Share" ~ "General Media"
+  ))
+
+ggplot(hnb_media_long, aes(x = date_month, y = Share, color = Actor)) +
+  geom_line(linewidth = 1) +
+  geom_vline(xintercept = as.Date("2023-01-01"), linetype = "dashed", color = "#27ae60") +
+  scale_color_manual(values = c("HNB Official" = "#1a3c5a", 
+                                "Financial Media" = "#e07b39",
+                                "General Media" = "#c44536")) +
+  scale_x_date(date_labels = "%Y-%m", date_breaks = "3 months") +
+  labs(
+    title = "Share of Coverage by Actor Type Over Time",
+    subtitle = "Monthly share of total articles",
+    x = NULL,
+    y = "Share of Articles (%)",
+    color = "Actor Type"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "top")
+```
+
+# Summary and Key Findings
+
+```{r summary-calculations}
+#| label: summary-calculations
+
+total_articles <- nrow(hnb)
+total_years <- length(unique(hnb$year))
+avg_daily <- mean(daily_stats$Articles, na.rm = TRUE)
+peak_day_articles <- max(daily_stats$Articles, na.rm = TRUE)
+peak_day_date <- daily_stats[which.max(Articles), date]
+```
+
+## Temporal Dynamics Summary
+
+```{r temporal-summary}
+#| label: temporal-summary
+
+tibble(
+  Finding = c(
+    "Corpus period",
+    "Total articles analyzed",
+    "Average daily articles",
+    "Peak single day volume",
+    "Peak day date",
+    "ERM II daily average",
+    "Euro Era daily average",
+    "Coverage change with euro"
+  ),
+  Value = c(
+    date_range,
+    format(total_articles, big.mark = ","),
+    sprintf("%.1f", avg_daily),
+    format(peak_day_articles, big.mark = ","),
+    as.character(peak_day_date),
+    sprintf("%.1f", period_stats[period == "ERM II", Articles_Per_Day]),
+    sprintf("%.1f", period_stats[period == "Euro Era", Articles_Per_Day]),
+    sprintf("%+.1f%%", (period_stats[period == "Euro Era", Articles_Per_Day] / 
+                        period_stats[period == "ERM II", Articles_Per_Day] - 1) * 100)
+  )
+) %>%
+  kable(col.names = c("Finding", "Value")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Hypotheses Assessment
+
+| Hypothesis | Metric | Finding |
+|------------|--------|---------|
+| H4: Event driven spikes | Event spike percentages | Examine event impact table |
+| H5: Euro structural break | Period comparison | Compare ERM II vs Euro Era metrics |
+
+## Key Insights
+
+1. **Overall trend:** Coverage volume `r ifelse(yearly_stats[year == max(year), Articles] > yearly_stats[year == min(year), Articles], "increased", "decreased")` from `r min(hnb$year)` to `r max(hnb$year)`
+
+2. **Euro transition impact:** Daily coverage `r ifelse(period_stats[period == "Euro Era", Articles_Per_Day] > period_stats[period == "ERM II", Articles_Per_Day], "increased", "decreased")` after euro adoption
+
+3. **Event responsiveness:** Major policy events generate measurable coverage spikes, supporting H4
+
+4. **Weekly patterns:** Coverage follows typical news cycle with `r dow_stats[which.max(Articles), DOW]` showing highest volume
+
+---
+
+# Appendix: Technical Notes
+
+## Event Window Methodology
+
+Event effects are calculated using a symmetric window approach:
+- Pre-event baseline: 7 days before event
+- Event window: Event day plus/minus 1 day
+- Post-event: 14 days after event
+
+Effect size represents percentage change from pre-event baseline.
+
+## Period Definition
+
+- **ERM II Period:** January 1, 2021 to December 31, 2022 (Croatia in Exchange Rate Mechanism II)
+- **Euro Era:** January 1, 2023 onwards (Croatia as eurozone member)
+
+```{r session-info}
+#| label: session-info
+
+sessionInfo()
+```

@@ -1,0 +1,78 @@
+# R and RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# Quarto
+/.quarto/
+_site/
+*_cache/
+*_files/
+
+# Data files (too large for Git)
+*.rds
+*.RDS
+*.rda
+*.RData
+data/raw/*.csv
+data/raw/*.xlsx
+data/raw/*.json
+
+# Keep processed classification files
+!data/processed/hnb_source_classification.csv
+
+# Environment and credentials
+.env
+.Renviron
+*.credentials
+*_credentials.json
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Output files that can be regenerated
+outputs/reports/*.html
+outputs/figures/*.png
+outputs/figures/*.pdf
+
+# Keep .gitkeep files
+!.gitkeep
+
+# Large media files
+*.mp4
+*.mov
+*.avi
+
+# Compressed archives
+*.zip
+*.tar.gz
+*.rar
+
+# Sensitive/personal
+notes_private/
+*_private.*
+*.private
+
+# Claude configuration (optional - may want to keep)
+# .claude/

@@ -1,0 +1,434 @@
+---
+title: "HNB DigiMedia Data Exploration"
+subtitle: "Gathering information for map design"
+author: "HNB DigiMedia Project"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    theme: cosmo
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(data.table)
+
+hnb <- readRDS("C:/Users/lsikic/Dropbox/hnb.rds")
+setDT(hnb)
+```
+
+# 1. Basic Data Structure
+
+## 1.1 Dimensions and Variables
+
+```{r dimensions}
+cat("Total articles:", nrow(hnb), "\n")
+cat("Variables:", ncol(hnb), "\n")
+cat("\nVariable names:\n")
+names(hnb)
+```
+
+## 1.2 Date Range and Temporal Coverage
+
+```{r date_range}
+hnb[, date := as.Date(DATE)]
+
+cat("Date range:", as.character(min(hnb$date, na.rm = TRUE)), 
+    "to", as.character(max(hnb$date, na.rm = TRUE)), "\n")
+
+hnb[, .(n_articles = .N), by = year(date)][order(year)] |> print()
+```
+
+```{r monthly_coverage}
+monthly <- hnb[, .(n = .N), by = .(year = year(date), month = month(date))]
+monthly[, plot_date := as.Date(paste(year, month, "01", sep = "-"))]
+
+ggplot(monthly, aes(x = plot_date, y = n)) +
+
+geom_line(linewidth = 0.8, color = "#2c3e50") +
+geom_vline(xintercept = as.Date("2020-07-10"), linetype = "dashed", 
+           color = "#e74c3c", alpha = 0.7) +
+geom_vline(xintercept = as.Date("2023-01-01"), linetype = "dashed", 
+           color = "#27ae60", alpha = 0.7) +
+annotate("text", x = as.Date("2020-07-10"), y = max(monthly$n) * 0.95, 
+         label = "ERM II", hjust = -0.1, color = "#e74c3c", size = 3) +
+annotate("text", x = as.Date("2023-01-01"), y = max(monthly$n) * 0.95, 
+         label = "Euro", hjust = -0.1, color = "#27ae60", size = 3) +
+labs(title = "Monthly Article Volume",
+     x = NULL, y = "Number of Articles") +
+theme_minimal()
+```
+
+# 2. Source Analysis
+
+## 2.1 Source Distribution
+
+```{r source_count}
+n_sources <- uniqueN(hnb$FROM)
+cat("Total unique sources:", n_sources, "\n")
+```
+
+```{r top_sources}
+source_counts <- hnb[, .(
+n_articles = .N,
+pct = .N / nrow(hnb) * 100
+), by = FROM][order(-n_articles)]
+
+cat("\nTop 30 sources:\n")
+source_counts[1:30] |> print()
+```
+
+```{r source_concentration}
+source_counts[, cumulative_pct := cumsum(pct)]
+
+cat("\nConcentration analysis:\n")
+cat("Top 5 sources cover:", round(source_counts[5, cumulative_pct], 1), "% of articles\n")
+cat("Top 10 sources cover:", round(source_counts[10, cumulative_pct], 1), "% of articles\n")
+cat("Top 20 sources cover:", round(source_counts[20, cumulative_pct], 1), "% of articles\n")
+
+sources_for_80 <- source_counts[cumulative_pct <= 80, .N] + 1
+cat("Sources needed for 80% coverage:", sources_for_80, "\n")
+```
+
+```{r source_distribution_plot}
+ggplot(source_counts[1:30], aes(x = reorder(FROM, n_articles), y = n_articles)) +
+geom_col(fill = "#3498db", alpha = 0.8) +
+coord_flip() +
+labs(title = "Top 30 Sources by Article Count",
+     x = NULL, y = "Number of Articles") +
+theme_minimal() +
+scale_y_continuous(labels = comma)
+```
+
+## 2.2 Full Source List for Classification
+
+```{r all_sources}
+cat("All", nrow(source_counts), "sources with article counts:\n\n")
+print(source_counts[, .(FROM, n_articles, pct = round(pct, 2))], nrows = Inf)
+```
+
+## 2.3 Domain Patterns from URL
+
+```{r url_patterns}
+hnb[, domain := str_extract(URL, "(?<=://)[^/]+")]
+hnb[, domain := str_remove(domain, "^www\\.")]
+
+domain_counts <- hnb[, .(n = .N), by = domain][order(-n)]
+
+cat("Top 30 domains:\n")
+domain_counts[1:30] |> print()
+```
+
+# 3. REACH Analysis
+
+## 3.1 REACH Distribution
+
+```{r reach_overview}
+cat("REACH variable summary:\n")
+summary(hnb$REACH)
+
+cat("\nNon-zero REACH:", sum(hnb$REACH > 0, na.rm = TRUE), 
+    "(", round(mean(hnb$REACH > 0, na.rm = TRUE) * 100, 1), "%)\n")
+cat("Missing REACH:", sum(is.na(hnb$REACH)), "\n")
+```
+
+```{r reach_distribution}
+hnb_reach <- hnb[REACH > 0]
+
+ggplot(hnb_reach, aes(x = REACH)) +
+geom_histogram(bins = 50, fill = "#2ecc71", alpha = 0.7) +
+scale_x_log10(labels = comma) +
+labs(title = "Distribution of REACH (log scale)",
+     subtitle = paste0("N = ", nrow(hnb_reach), " articles with REACH > 0"),
+     x = "REACH", y = "Count") +
+theme_minimal()
+```
+
+## 3.2 REACH by Source
+
+```{r reach_by_source}
+source_reach <- hnb[, .(
+n_articles = .N,
+total_reach = sum(REACH, na.rm = TRUE),
+mean_reach = mean(REACH, na.rm = TRUE),
+median_reach = median(REACH, na.rm = TRUE)
+), by = FROM][order(-total_reach)]
+
+cat("Top 30 sources by total REACH:\n")
+source_reach[1:30] |> print()
+```
+
+```{r reach_concentration}
+source_reach[, reach_pct := total_reach / sum(total_reach) * 100]
+source_reach[, reach_cumulative := cumsum(reach_pct)]
+
+cat("\nREACH concentration:\n")
+cat("Top 5 sources capture:", round(source_reach[5, reach_cumulative], 1), "% of total REACH\n")
+cat("Top 10 sources capture:", round(source_reach[10, reach_cumulative], 1), "% of total REACH\n")
+cat("Top 20 sources capture:", round(source_reach[20, reach_cumulative], 1), "% of total REACH\n")
+```
+
+## 3.3 Article Count vs REACH Comparison
+
+```{r count_vs_reach}
+comparison <- merge(
+source_counts[, .(FROM, rank_articles = 1:.N)],
+source_reach[, .(FROM, rank_reach = 1:.N)],
+by = "FROM"
+)
+
+comparison[, rank_diff := rank_articles - rank_reach]
+
+cat("Sources with biggest rank differences (article count vs REACH):\n")
+cat("\nHigher REACH rank than article rank (punching above weight):\n")
+comparison[order(-rank_diff)][1:10] |> print()
+
+cat("\nLower REACH rank than article rank (punching below weight):\n")
+comparison[order(rank_diff)][1:10] |> print()
+```
+
+# 4. Author Analysis
+
+```{r author_overview}
+cat("Articles with author:", sum(!is.na(hnb$AUTHOR) & hnb$AUTHOR != ""), "\n")
+cat("Unique authors:", uniqueN(hnb$AUTHOR[!is.na(hnb$AUTHOR) & hnb$AUTHOR != ""]), "\n")
+
+author_counts <- hnb[!is.na(AUTHOR) & AUTHOR != "", .(n = .N), by = AUTHOR][order(-n)]
+
+cat("\nTop 30 authors:\n")
+author_counts[1:30] |> print()
+```
+
+# 5. Content Analysis Preparation
+
+## 5.1 Title and Text Availability
+
+```{r text_availability}
+cat("TITLE availability:", sum(!is.na(hnb$TITLE) & hnb$TITLE != ""), "/", nrow(hnb), "\n")
+cat("FULL_TEXT availability:", sum(!is.na(hnb$FULL_TEXT) & hnb$FULL_TEXT != ""), "/", nrow(hnb), "\n")
+
+hnb[, text_length := nchar(FULL_TEXT)]
+cat("\nText length (characters):\n")
+summary(hnb$text_length)
+```
+
+## 5.2 Sample Titles
+
+```{r sample_titles}
+cat("Random sample of 30 titles:\n\n")
+set.seed(42)
+sample(hnb$TITLE[!is.na(hnb$TITLE)], 30) |> cat(sep = "\n\n")
+```
+
+## 5.3 Keyword Frequency in Titles
+
+```{r keyword_check}
+keywords <- c("HNB", "Hrvatska narodna banka", "guverner", "Vujčić", 
+            "inflacija", "euro", "kuna", "tečaj", "kamat", 
+            "ECB", "monetarn", "deviz", "banka")
+
+keyword_freq <- sapply(keywords, function(kw) {
+sum(str_detect(tolower(hnb$TITLE), tolower(kw)), na.rm = TRUE)
+})
+
+data.frame(
+keyword = keywords,
+n_articles = keyword_freq,
+pct = round(keyword_freq / nrow(hnb) * 100, 1)
+) |> arrange(desc(n_articles)) |> print()
+```
+
+## 5.4 Pronadjena_recenica Field
+
+This appears to be the sentence that matched your search criteria.
+
+```{r matched_sentence}
+cat("Sample of matched sentences:\n\n")
+set.seed(123)
+sample(hnb$Pronadjena_recenica[!is.na(hnb$Pronadjena_recenica)], 10) |> 
+cat(sep = "\n\n---\n\n")
+```
+
+# 6. Temporal Patterns
+
+## 6.1 Day of Week Distribution
+
+```{r dow_distribution}
+hnb[, dow := lubridate::wday(date, label = TRUE)]
+
+dow_counts <- hnb[, .(n = .N), by = dow]
+
+ggplot(dow_counts, aes(x = dow, y = n)) +
+geom_col(fill = "#9b59b6", alpha = 0.8) +
+labs(title = "Articles by Day of Week",
+     x = NULL, y = "Count") +
+theme_minimal()
+```
+
+## 6.2 Articles by Policy Period
+
+```{r period_analysis}
+hnb[, period := fcase(
+date < as.Date("2020-07-10"), "Pre-ERM II",
+date < as.Date("2023-01-01"), "ERM II",
+default = "Euro Era"
+)]
+
+hnb[, period := factor(period, levels = c("Pre-ERM II", "ERM II", "Euro Era"))]
+
+period_summary <- hnb[, .(
+n_articles = .N,
+n_sources = uniqueN(FROM),
+total_reach = sum(REACH, na.rm = TRUE),
+mean_reach = mean(REACH, na.rm = TRUE),
+days = as.numeric(max(date) - min(date))
+), by = period]
+
+period_summary[, articles_per_day := round(n_articles / days, 1)]
+
+print(period_summary)
+```
+
+## 6.3 Top Sources by Period
+
+```{r sources_by_period}
+for (p in c("Pre-ERM II", "ERM II", "Euro Era")) {
+cat("\n===", p, "===\n")
+hnb[period == p, .N, by = FROM][order(-N)][1:10] |> print()
+}
+```
+
+## 6.4 REACH Distribution by Period
+
+```{r reach_by_period}
+ggplot(hnb[REACH > 0], aes(x = period, y = REACH)) +
+geom_boxplot(fill = "#3498db", alpha = 0.6) +
+scale_y_log10(labels = comma) +
+labs(title = "REACH Distribution by Period",
+     x = NULL, y = "REACH (log scale)") +
+theme_minimal()
+```
+
+# 7. Classification Signals
+
+## 7.1 Financial Media Indicators
+
+```{r classification_signals}
+financial_terms <- c("poslovni", "lider", "finance", "ekonom", "business", 
+                   "novac", "kapital", "banka", "seebiz", "money", "tportal")
+
+source_counts[, has_financial_term := str_detect(tolower(FROM), 
+                                                  paste(financial_terms, collapse = "|"))]
+
+cat("Sources with financial terms in name:\n")
+source_counts[has_financial_term == TRUE, .(FROM, n_articles)] |> print()
+
+cat("\nTheir combined share:", 
+  round(sum(source_counts[has_financial_term == TRUE, n_articles]) / nrow(hnb) * 100, 1), 
+  "% of articles\n")
+```
+
+## 7.2 General News Portal Patterns
+
+```{r news_portal_patterns}
+news_terms <- c("index", "jutarnji", "večernji", "24sata", "dnevnik", 
+              "net.hr", "telegram", "nacional", "slobodna", "novi list")
+
+source_counts[, has_news_term := str_detect(tolower(FROM), 
+                                             paste(news_terms, collapse = "|"))]
+
+cat("Sources matching general news patterns:\n")
+source_counts[has_news_term == TRUE, .(FROM, n_articles)] |> print()
+```
+
+## 7.3 Potential HNB Official Sources
+
+```{r hnb_sources}
+hnb_terms <- c("hnb", "narodna banka")
+
+source_counts[, is_hnb := str_detect(tolower(FROM), paste(hnb_terms, collapse = "|"))]
+
+cat("Potential HNB official sources:\n")
+source_counts[is_hnb == TRUE, .(FROM, n_articles)] |> print()
+```
+
+# 8. KEYWORD_NAME Analysis
+
+```{r keyword_name}
+cat("Distribution of KEYWORD_NAME:\n")
+hnb[, .N, by = KEYWORD_NAME][order(-N)] |> print()
+```
+
+# 9. Data Quality Summary
+
+```{r quality_summary}
+key_vars <- c("DATE", "FROM", "URL", "TITLE", "FULL_TEXT", "REACH", "AUTHOR")
+
+quality_check <- data.frame(
+Variable = key_vars,
+Non_Missing = sapply(key_vars, function(v) {
+  sum(!is.na(hnb[[v]]) & hnb[[v]] != "")
+}),
+Pct_Complete = sapply(key_vars, function(v) {
+  round(mean(!is.na(hnb[[v]]) & hnb[[v]] != "") * 100, 1)
+})
+)
+
+print(quality_check)
+```
+
+# 10. Export for Classification
+
+```{r export_sources}
+source_export <- merge(source_counts, source_reach[, .(FROM, total_reach, mean_reach)], 
+                      by = "FROM", all.x = TRUE)
+
+source_export <- source_export[order(-n_articles), .(
+FROM, 
+n_articles, 
+pct_articles = round(pct, 2),
+total_reach,
+mean_reach = round(mean_reach, 0),
+actor_category = ""
+)]
+
+fwrite(source_export, "hnb_source_classification.csv")
+cat("Exported hnb_source_classification.csv with", nrow(source_export), "sources\n")
+```
+
+---
+
+# Summary Statistics for Map Design
+
+Copy these key numbers after running:
+
+```{r final_summary}
+cat("="
+, rep("=", 50), "\n", sep = "")
+cat("HNB DIGIMEDIA DATA SUMMARY\n")
+cat(rep("=", 51), "\n\n", sep = "")
+
+cat("Total articles:", nrow(hnb), "\n")
+cat("Date range:", as.character(min(hnb$date)), "to", as.character(max(hnb$date)), "\n")
+cat("Unique sources:", uniqueN(hnb$FROM), "\n")
+cat("Unique authors:", uniqueN(hnb$AUTHOR[!is.na(hnb$AUTHOR) & hnb$AUTHOR != ""]), "\n\n")
+
+cat("REACH coverage:", round(mean(hnb$REACH > 0, na.rm = TRUE) * 100, 1), "% non-zero\n")
+cat("Total REACH:", format(sum(hnb$REACH, na.rm = TRUE), big.mark = ","), "\n\n")
+
+cat("Articles by period:\n")
+print(hnb[, .N, by = period])
+
+cat("\nTop 5 sources:\n")
+print(source_counts[1:5, .(FROM, n_articles, pct = round(pct, 1))])
+
+cat("\nTop 5 sources by REACH:\n")
+print(source_reach[1:5, .(FROM, total_reach, pct = round(reach_pct, 1))])
+```

@@ -1,0 +1,1137 @@
+---
+title: "HNB DigiMedia Map 2: Thematic Structure"
+subtitle: "What is Croatian Central Banking Coverage About?"
+author: "HNB DigiMedia Project"
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    code-fold: true
+    code-summary: "Show code"
+    theme: cosmo
+    fig-width: 10
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| label: setup
+#| include: false
+
+# ============================================================================
+# CONFIGURATION - ADJUST THESE PARAMETERS
+# ============================================================================
+SAMPLE_PCT <- 0.30
+NUM_TOPICS <- 20
+# ============================================================================
+
+library(tidyverse)
+library(data.table)
+library(scales)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(text2vec)
+library(quanteda)
+library(quanteda.textstats)
+library(quanteda.textplots)
+library(stm)
+library(tidytext)
+library(ggrepel)
+library(viridis)
+library(pheatmap)
+library(RColorBrewer)
+
+theme_set(theme_minimal(base_size = 12) +
+          theme(
+            plot.title = element_text(face = "bold", size = 14),
+            plot.subtitle = element_text(color = "gray40"),
+            legend.position = "bottom"
+          ))
+
+# Color palette for actor types
+actor_colors <- c(
+  "HNB Official" = "#1a3c5a",
+  "Financial Regulators" = "#2c5f7c",
+  "Commercial Banks" = "#4a9c6d",
+  "Financial Media" = "#e07b39",
+  "General Media" = "#c44536",
+  "International Sources" = "#6b4c9a",
+  "Academic/Expert" = "#64748b",
+  "Political Actors" = "#eab308",
+  "Financial Influencers" = "#ec4899",
+  "Government" = "#0ea5e9",
+  "Other" = "#94a3b8"
+)
+
+# Color palette for topic categories
+topic_category_colors <- c(
+  "Monetary Policy" = "#1a3c5a",
+  "Euro Transition" = "#27ae60",
+  "Inflation/Prices" = "#c0392b",
+  "Banking Sector" = "#2980b9",
+  "Economic Conditions" = "#8e44ad",
+  "Financial Regulation" = "#16a085",
+  "Political/Institutional" = "#d35400",
+  "Consumer Finance" = "#f39c12",
+  "Other" = "#95a5a6"
+)
+
+# Color palette for periods
+period_colors <- c(
+  "ERM II" = "#3498db",
+  "Euro Era" = "#27ae60"
+)
+```
+
+# Introduction
+
+This document presents **Map 2: Thematic Structure** of the HNB DigiMedia project. The core question driving this analysis is: **What is Croatian central banking coverage about, and who specializes in what?**
+
+We use topic modeling to discover the thematic landscape of the corpus and then examine how different actors specialize in particular topics. This analysis directly addresses hypotheses about the content structure of monetary policy coverage during Croatias historic transition to the euro.
+
+## Methodological Overview
+
+**Topic modeling** is an unsupervised machine learning technique that discovers latent thematic patterns in large text corpora. Unlike manual content analysis, topic models can process thousands of documents and identify recurring themes without predefined categories.
+
+We employ **Structural Topic Modeling (STM)**, an extension of Latent Dirichlet Allocation (LDA) that incorporates document metadata (actor type, period) as covariates. This allows us to examine not only what topics exist but also how topic prevalence varies across different communicators and time periods.
+
+**Key concepts:**
+
+- **Topic:** A probability distribution over words representing coherent themes (e.g., interest rates, euro conversion, inflation)
+- **Document topic distribution (theta):** Each article is a mixture of topics
+- **Topic prevalence:** The average proportion of the corpus devoted to each topic
+- **FREX words:** Words that are both frequent AND exclusive to a topic
+
+**Research questions:**
+
+1. What are the dominant themes in HNB coverage?
+2. Do official HNB sources emphasize different topics than media coverage?
+3. How did thematic composition shift with euro adoption?
+4. Which topics generate the most attention (REACH)?
+
+```{r load-data}
+#| label: load-data
+
+hnb <- readRDS("C:/Users/lsikic/Dropbox/hnb.rds")
+setDT(hnb)
+
+hnb[, date := as.Date(DATE)]
+hnb[, year := year(date)]
+
+hnb[, period := fcase(
+  date < as.Date("2023-01-01"), "ERM II",
+  default = "Euro Era"
+)]
+hnb[, period := factor(period, levels = c("ERM II", "Euro Era"))]
+
+n_articles <- nrow(hnb)
+n_with_text <- sum(!is.na(hnb$FULL_TEXT) & nchar(hnb$FULL_TEXT) > 100, na.rm = TRUE)
+
+cat("Data loaded:", n_articles, "articles\n")
+cat("Articles with sufficient text:", n_with_text, "\n")
+```
+
+```{r actor-classification}
+#| label: actor-classification
+
+# =============================================================================
+# ACTOR CLASSIFICATION FOR HNB DIGIMEDIA
+# =============================================================================
+# Same classification as Map 1 for consistency
+
+manual_overrides <- list(
+  "HNB Official" = c(
+    "hnb.hr", "hrvatska narodna banka",
+    "hrvatska narodna banka / croatian national bank"
+  ),
+  "Financial Regulators" = c(
+    "hanfa.hr", "hanfa", "hrvatska agencija za nadzor financijskih usluga",
+    "fina.hr", "fina", "financijska agencija"
+  ),
+  "Government" = c(
+    "gov.hr", "vlada", "vlada republike hrvatske",
+    "ministarstvo financija", "sabor.hr"
+  ),
+  "Financial Media" = c(
+    "poslovni.hr", "poslovni dnevnik", "seebiz.eu", "seebiz",
+    "lider.media", "lidermedia.hr", "lider", "bloombergadria.com",
+    "bloomberg adria", "hrportfolio.hr", "privredni.hr"
+  ),
+  "Commercial Banks" = c(
+    "zaba.hr", "zagrebačka banka", "pbz.hr", "privredna banka zagreb",
+    "erste.hr", "erste banka", "hpb.hr", "hrvatska poštanska banka",
+    "otp banka", "raiffeisen", "addiko"
+  ),
+  "Academic/Expert" = c(
+    "eizg.hr", "ekonomski institut zagreb", "ijf.hr",
+    "institut za javne financije", "ekonomski fakultet"
+  )
+)
+
+general_media_sources <- c(
+  "index.hr", "index", "jutarnji.hr", "jutarnji", "jutarnji list",
+  "vecernji.hr", "vecernji", "večernji list",
+  "24sata.hr", "24sata", "slobodnadalmacija.hr", "slobodna dalmacija",
+  "novilist.hr", "novi list", "dnevnik.hr", "dnevnik",
+  "tportal.hr", "tportal", "telegram.hr", "telegram",
+  "net.hr", "rtl.hr", "rtl", "hrt.hr", "hrt",
+  "n1info.hr", "n1info.com", "n1", "nacional.hr", "nacional",
+  "direktno.hr", "direktno", "dnevno.hr", "dnevno"
+)
+
+classify_actor_hnb <- function(from_val, url_val = NA) {
+  from_lower <- tolower(trimws(as.character(from_val)))
+  url_lower <- tolower(ifelse(is.na(url_val), "", as.character(url_val)))
+  combined <- paste(from_lower, url_lower)
+  
+  match_any <- function(patterns, text, fixed = TRUE) {
+    any(sapply(patterns, function(p) grepl(p, text, fixed = fixed)))
+  }
+  
+  for (actor_type in names(manual_overrides)) {
+    if (match_any(manual_overrides[[actor_type]], from_lower)) {
+      return(actor_type)
+    }
+  }
+  
+  if (grepl("hnb\\.hr", url_lower) || grepl("hnb\\.hr", from_lower)) {
+    return("HNB Official")
+  }
+  
+  if (grepl("hanfa|fina\\.hr", combined)) {
+    return("Financial Regulators")
+  }
+  
+  if (grepl("gov\\.hr|vlada|ministarstvo", combined)) {
+    return("Government")
+  }
+  
+  bank_patterns <- c("banka", "bank", "zaba", "pbz", "erste", "hpb",
+                     "otp", "raiffeisen", "addiko", "sberbank")
+  if (match_any(bank_patterns, from_lower)) {
+    if (!grepl("narodna|hnb|central", from_lower)) {
+      return("Commercial Banks")
+    }
+  }
+  
+  financial_media_patterns <- c(
+    "poslovni", "seebiz", "lider", "bloomberg", "portfolio",
+    "privredni", "finance", "ekonom", "business", "capital"
+  )
+  if (match_any(financial_media_patterns, from_lower)) {
+    return("Financial Media")
+  }
+  
+  if (match_any(general_media_sources, from_lower)) {
+    return("General Media")
+  }
+  
+  news_patterns <- c("portal", "vijesti", "news", "info", "dnevni",
+                     "radio", "tv", ".hr")
+  if (match_any(news_patterns, from_lower)) {
+    return("General Media")
+  }
+  
+  return("Other")
+}
+
+hnb[, ACTOR_TYPE := mapply(classify_actor_hnb, FROM, URL)]
+
+actor_order <- c("HNB Official", "Financial Regulators", "Government",
+                 "Commercial Banks", "Financial Media", "General Media",
+                 "International Sources", "Academic/Expert",
+                 "Political Actors", "Financial Influencers", "Other")
+hnb[, ACTOR_TYPE := factor(ACTOR_TYPE, levels = actor_order)]
+```
+
+## Corpus Overview
+
+```{r corpus-overview}
+#| label: corpus-overview
+
+tibble(
+  Metric = c("Total articles", "Articles with sufficient text (>100 chars)",
+             "Unique sources", "Date range", "Periods"),
+  Value = c(
+    format(n_articles, big.mark = ","),
+    format(n_with_text, big.mark = ","),
+    format(uniqueN(hnb$FROM), big.mark = ","),
+    paste(min(hnb$date), "to", max(hnb$date)),
+    "ERM II (2021-2022), Euro Era (2023)"
+  )
+) %>%
+  kable(col.names = c("Metric", "Value")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+# Analysis 2.1: Topic Discovery
+
+## Text Preprocessing
+
+Before topic modeling, text must be cleaned and tokenized. Preprocessing for Croatian financial text involves:
+
+1. **URL removal:** Eliminate web addresses
+2. **Lowercasing:** Standardize case
+3. **Punctuation/number removal:** Keep only alphabetic content
+4. **Stopword removal:** Filter common Croatian words plus financial boilerplate
+5. **Minimum character filter:** Remove tokens < 3 characters
+6. **Frequency trimming:** Keep terms appearing in multiple documents
+
+```{r text-preprocessing}
+#| label: text-preprocessing
+
+# Croatian stopwords plus financial/media noise
+croatian_stopwords <- unique(c(
+  # --- CONJUNCTIONS ---
+  "i", "pa", "te", "ni", "niti", "a", "ali", "nego", "no", "već", "vec",
+  "ili", "da", "dok", "jer", "ako", "mada", "premda", "iako", "kako",
+  "neka", "kad", "kada", "cim", "čim", "zato", "stoga", "dakle",
+  
+  # --- PREPOSITIONS ---
+  "u", "na", "s", "sa", "o", "po", "za", "uz", "iz", "do", "od", "pri",
+  "k", "ka", "bez", "blizu", "osim", "među", "medju", "medu", "poput", "putem",
+  "prema", "pored", "pokraj", "kroz", "nad", "pod", "pred", "oko", "okolo",
+  "niz", "uzduž", "duž", "vrh", "dno", "kraj", "krajem", "usprkos", "glede",
+  
+  # --- AUXILIARY VERBS ---
+  "sam", "si", "je", "smo", "ste", "su", "jesam", "jesi", "jest", "jesmo", "jeste", "jesu",
+  "budem", "budeš", "budes", "bude", "budemo", "budete", "budu",
+  "bio", "bila", "bilo", "bili", "bile",
+  "nisam", "nisi", "nije", "nismo", "niste", "nisu",
+  "ne", "nemoj", "nemojte", "nemojmo", "biti", "bit", "bismo", "biste",
+  
+  # --- MODAL VERBS ---
+  "ću", "cu", "ćeš", "ces", "će", "ce", "ćemo", "cemo", "ćete", "cete",
+  "hoću", "hocu", "hoćeš", "hoces", "hoće", "hoce",
+  "bih", "bi", "htio", "htjela", "htjelo", "htjeli",
+  "mogu", "možeš", "mozes", "može", "moze", "možemo", "mozemo",
+  "imam", "imaš", "imas", "ima", "imamo", "imate", "imaju",
+  
+  # --- COMMON VERBS ---
+  "reći", "reci", "rekao", "rekla", "rekli", "kaže", "kaze",
+  "treba", "trebao", "trebala", "trebali", "trebati",
+  "mora", "moram", "moraš", "moras", "moramo", "morate", "moraju",
+  
+  # --- PRONOUNS ---
+  "ja", "mene", "meni", "me", "mnom", "mnome",
+  "mi", "nas", "nama", "nam",
+  "ti", "tebe", "tebi", "te", "tobom",
+  "vi", "vas", "vama", "vam",
+  "on", "njega", "njemu", "ga", "nj", "njim",
+  "ona", "nje", "njoj", "ju", "njom",
+  "ono", "oni", "one", "njih", "njima", "ih",
+  "sebe", "sebi", "se", "sobom",
+  
+  # --- DETERMINERS ---
+  "taj", "ta", "to", "tog", "toga", "tom", "tome", "tim", "toj", "te",
+  "ovaj", "ova", "ovo", "ovog", "ovom", "ovim", "ovoj", "ove",
+  "onaj", "onog", "onom", "onim", "onoj",
+  "moj", "moja", "moje", "tvoj", "tvoja", "tvoje",
+  "naš", "naša", "naše", "vaš", "vaša", "vaše",
+  "njegov", "njegova", "njegovo", "njen", "njezin", "njihov",
+  "svoj", "svoja", "svoje",
+  
+  # --- QUESTION WORDS ---
+  "tko", "što", "sto", "kog", "koga", "kom", "kome", "čemu", "cemu",
+  "koji", "koja", "koje", "kojeg", "kojem", "kojim", "kojoj",
+  "kakav", "kakva", "kakvo", "kakvog", "kakvom",
+  "čiji", "ciji", "čija", "cija", "čije", "cije",
+  "gdje", "gde", "kamo", "kuda", "odakle", "zašto", "zasto",
+  
+  # --- NUMBERS/QUANTIFIERS ---
+  "jedan", "jedna", "jedno", "jednog", "jednom", "jednoj",
+  "dva", "dvije", "dvoje", "tri", "četiri", "cetiri", "pet",
+  "prvi", "prva", "prvo", "prvog", "prvom", "drugi", "druga", "drugo",
+  "sve", "svi", "sva", "svega", "svemu", "svim", "svima",
+  "neki", "neka", "neko", "nekog", "nekom", "nekoj",
+  "mnogi", "mnoga", "mnogo", "mnoge", "više", "vise", "manje",
+  
+  # --- ADVERBS ---
+  "sada", "sad", "danas", "jučer", "jucer", "sutra",
+  "već", "vec", "još", "jos", "tek", "samo", "baš", "bas",
+  "tu", "tamo", "ovdje", "ovde", "ondje", "onde",
+  "tako", "vrlo", "jako", "dosta", "prilično", "prilicno",
+  
+  # --- WEB/MEDIA NOISE ---
+  "www", "http", "https", "com", "hr", "org", "net",
+  "foto", "video", "izvor", "autor", "objavljeno", "objavio",
+  "pročitajte", "procitajte", "pogledajte", "kliknite", "saznajte",
+  "nastavak", "nastavi", "detaljnije", "opširnije", "opsirnije",
+  "hina", "cropix", "pixsell", "reuters", "afp",
+  
+  # --- GENERIC NOUNS ---
+  "čovjek", "covjek", "ljudi", "osoba", "osobe",
+  "stvar", "stvari", "način", "nacin", "pitanje", "pitanja",
+  "dio", "dijela", "put", "puta", "mjesto", "mjesta",
+  "strana", "strane", "slučaj", "slucaj", "primjer", "primjera",
+  "razlog", "razloga", "činjenica", "cinjenica", "podatak", "podatka",
+  "informacija", "informacije", "tema", "teme", "problem", "problema",
+  
+  # --- ADJECTIVES ---
+  "velik", "velika", "veliko", "veliki", "mali", "mala", "malo",
+  "novi", "nova", "novo", "star", "stara", "staro",
+  "dobar", "dobra", "dobro", "loš", "los", "loša", "losa",
+  "različit", "razlicit", "sličan", "slican", "moguć", "moguc",
+  "potreban", "potrebna", "potrebno", "važan", "vazan", "važna", "vazna",
+  
+  # --- LINKING WORDS ---
+  "kao", "poput", "primjerice", "recimo", "odnosno", "naime", "zapravo",
+  "prije", "nakon", "tijekom", "tokom", "zbog", "radi", "uslijed",
+  "tako", "takav", "takva", "takvo", "često", "cesto", "rijetko",
+  
+  # --- FINANCIAL BOILERPLATE ---
+  "kuna", "kn", "eur", "usd", "posto", "postotni", "postotnih",
+  "milijun", "milijuna", "milijardi", "tisuća", "tisuca",
+  
+  # --- FOREIGN WORDS ---
+  "the", "and", "for", "you", "are", "was", "that", "this", "with", "have",
+  "der", "die", "das", "und", "von"
+))
+
+hnb_text <- hnb[!is.na(FULL_TEXT) & nchar(FULL_TEXT) > 100]
+
+set.seed(42)
+
+sample_size <- ceiling(nrow(hnb_text) * SAMPLE_PCT)
+sample_idx <- sample(1:nrow(hnb_text), sample_size)
+hnb_sample <- hnb_text[sample_idx]
+
+cat("
+╔══════════════════════════════════════════════════════════════════╗
+║  SAMPLING CONFIGURATION                                          ║
+╠══════════════════════════════════════════════════════════════════╣
+║  Sample percentage:", sprintf("%5.1f%%", SAMPLE_PCT * 100), "
+║  Documents sampled:", sprintf("%6d", nrow(hnb_sample)), "
+║  Total available:  ", sprintf("%6d", nrow(hnb_text)), "
+╚══════════════════════════════════════════════════════════════════╝
+")
+
+hnb_sample[, doc_id := .I]
+hnb_sample[, clean_text := FULL_TEXT]
+hnb_sample[, clean_text := gsub("https?://\\S+", "", clean_text)]
+hnb_sample[, clean_text := gsub("www\\.\\S+", "", clean_text)]
+hnb_sample[, clean_text := gsub("[^[:alpha:][:space:]]", " ", clean_text)]
+hnb_sample[, clean_text := tolower(clean_text)]
+hnb_sample[, clean_text := gsub("\\s+", " ", clean_text)]
+hnb_sample[, clean_text := trimws(clean_text)]
+```
+
+```{r create-dfm}
+#| label: create-dfm
+
+corpus_hnb <- corpus(hnb_sample, text_field = "clean_text", docid_field = "doc_id")
+
+docvars(corpus_hnb, "actor_type") <- hnb_sample$ACTOR_TYPE
+docvars(corpus_hnb, "period") <- hnb_sample$period
+docvars(corpus_hnb, "year") <- hnb_sample$year
+
+tokens_hnb <- tokens(corpus_hnb,
+                     remove_punct = TRUE,
+                     remove_numbers = TRUE,
+                     remove_symbols = TRUE) %>%
+  tokens_tolower() %>%
+  tokens_remove(pattern = croatian_stopwords) %>%
+  tokens_remove(pattern = stopwords("en")) %>%
+  tokens_keep(min_nchar = 3)
+
+dfm_hnb <- dfm(tokens_hnb) %>%
+  dfm_trim(min_termfreq = 10, min_docfreq = 5)
+
+cat("Documents:", ndoc(dfm_hnb), "\n")
+cat("Features:", nfeat(dfm_hnb), "\n")
+```
+
+```{r stm-model}
+#| label: stm-model
+#| cache: true
+
+if (ndoc(dfm_hnb) == 0) {
+  stop("DFM has 0 documents! Check data loading and filtering.")
+}
+if (nfeat(dfm_hnb) == 0) {
+  stop("DFM has 0 features! Check preprocessing and trimming.")
+}
+
+stm_dfm <- convert(dfm_hnb, to = "stm")
+
+K <- NUM_TOPICS
+
+if (length(stm_dfm$documents) < K * 3) {
+  K <- max(5, floor(length(stm_dfm$documents) / 3))
+  warning("Reduced K to ", K, " due to small corpus size")
+}
+
+stm_model <- stm(
+  documents = stm_dfm$documents,
+  vocab = stm_dfm$vocab,
+  K = K,
+  prevalence = ~ actor_type + period,
+  data = stm_dfm$meta,
+  init.type = "Spectral",
+  max.em.its = 50,
+  verbose = FALSE,
+  seed = 42
+)
+
+cat("STM model fitted with", K, "topics\n")
+```
+
+## Topic Labels and Top Words
+
+Each topic is characterized by words that appear frequently within it.
+
+**Top Words (Probability):** Words with highest probability of appearing in documents assigned to this topic.
+
+**FREX Words (Distinctive):** Words that are both frequent AND exclusive to this topic, helping identify what makes each topic unique.
+
+```{r topic-words}
+#| label: topic-words
+
+topic_words <- labelTopics(stm_model, n = 10)
+
+topic_df <- data.frame(
+  Topic = 1:K,
+  Top_Words = apply(topic_words$prob, 1, paste, collapse = ", "),
+  FREX_Words = apply(topic_words$frex, 1, paste, collapse = ", ")
+)
+
+topic_df %>%
+  kable(col.names = c("Topic", "Top Words (Probability)", "FREX Words (Distinctive)")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = TRUE) %>%
+  scroll_box(height = "500px")
+```
+
+## Topic Prevalence Overview
+
+**Topic prevalence** measures what proportion of the corpus is devoted to each topic.
+
+```{r topic-prevalence}
+#| label: topic-prevalence
+#| fig-height: 9
+
+topic_proportions <- colMeans(stm_model$theta)
+
+topic_prev_df <- data.frame(
+  Topic = factor(1:K),
+  Prevalence = topic_proportions * 100
+) %>%
+  arrange(desc(Prevalence)) %>%
+  mutate(Topic = factor(Topic, levels = Topic))
+
+ggplot(topic_prev_df, aes(x = Topic, y = Prevalence)) +
+  geom_col(fill = "#2c5f7c", width = 0.7) +
+  geom_text(aes(label = sprintf("%.1f%%", Prevalence)),
+            hjust = -0.1, size = 3) +
+  coord_flip() +
+  scale_y_continuous(limits = c(0, max(topic_prev_df$Prevalence) * 1.15),
+                     labels = function(x) paste0(x, "%")) +
+  labs(
+    title = "Topic Prevalence in HNB Coverage Corpus",
+    subtitle = paste("Distribution across", K, "topics"),
+    x = "Topic",
+    y = "Prevalence (%)"
+  )
+```
+
+## Topic Word Clouds
+
+```{r topic-wordclouds}
+#| label: topic-wordclouds
+#| fig-height: 10
+#| fig-width: 12
+
+n_rows <- ceiling(K / 5)
+par(mfrow = c(n_rows, 5), mar = c(0.5, 0.5, 1.5, 0.5))
+
+for (i in 1:K) {
+  cloud(stm_model, topic = i, max.words = 30,
+        colors = brewer.pal(8, "Dark2"),
+        main = paste("Topic", i))
+}
+
+par(mfrow = c(1, 1))
+```
+
+# Analysis 2.2: Topic Taxonomy
+
+Group discovered topics into higher order thematic categories based on keyword matching against predefined dictionaries for monetary policy and financial coverage.
+
+## Category Definitions
+
+| Category | Description | Example keywords |
+|----------|-------------|------------------|
+| Monetary Policy | Central bank policy, interest rates, money supply | kamatna, monetarn, politika, referentn |
+| Euro Transition | Currency conversion, eurozone accession | euro, konverzij, tečaj, tecaj, zamjen |
+| Inflation/Prices | Price stability, inflation, cost of living | inflacij, cijene, poskupljenj, rast cijena |
+| Banking Sector | Commercial banking, loans, deposits | kredit, banka, štednj, zajam |
+| Economic Conditions | GDP, growth, employment, recession | gospodarstvo, rast, bdp, nezaposlen |
+| Financial Regulation | Supervision, compliance, financial stability | nadzor, regulacij, stabilnost, propisi |
+| Political/Institutional | Government policy, EU relations, political actors | vlada, sabor, eu, ministar |
+| Consumer Finance | Personal finance, exchange, payments | mjenjačnic, plaćanj, transakcij |
+
+```{r topic-taxonomy}
+#| label: topic-taxonomy
+
+topic_taxonomy <- data.frame(
+  Topic = 1:K,
+  stringsAsFactors = FALSE
+)
+
+topic_taxonomy$Category <- NA
+topic_taxonomy$Label <- NA
+
+topic_words_list <- lapply(1:K, function(i) {
+  c(topic_words$prob[i, ], topic_words$frex[i, ])
+})
+
+# KEYWORD DICTIONARIES FOR FINANCIAL/MONETARY POLICY CONTENT
+
+monetary_policy_keywords <- c(
+  "kamat", "kamatna", "kamatne", "kamatnih", "kamatnu",
+  "monetarn", "monetarna", "monetarne", "monetarni",
+  "politika", "politike", "politiku",
+  "referentn", "referentna", "referentne",
+  "stopa", "stope", "stopu", "stopom",
+  "ecb", "europska središnja", "središnja banka",
+  "likvidnost", "likvidnosti",
+  "tržište", "trziste", "novčano", "novcano",
+  "repo", "lombardn", "eskontna",
+  "transmisij", "transmisijski"
+)
+
+euro_transition_keywords <- c(
+  "euro", "eura", "eurom", "eur",
+  "eurozon", "eurozona", "eurozone",
+  "konverzij", "konverzija", "konverzije", "konverziju",
+  "tečaj", "tecaj", "tečaja", "tecaja", "tečajn", "tecajn",
+  "zamjen", "zamjena", "zamjene", "zamjenu",
+  "uvođenj", "uvodjenje", "uvedeni", "uveden",
+  "fiksn", "fiksni", "fiksnog", "fiksiran",
+  "erm", "tečajni mehanizam", "tecajni mehanizam",
+  "pristupanj", "pristupanje", "priključenj"
+)
+
+inflation_keywords <- c(
+  "inflacij", "inflacija", "inflacije", "inflaciju", "inflacijski",
+  "cijena", "cijene", "cijenama",
+  "poskupljenj", "poskupljenje", "poskupljenja",
+  "rast cijena", "pad cijena",
+  "indeks potrošačkih", "indeks potrosackih",
+  "skupoć", "skupoca", "životni standard", "zivotni standard",
+  "energent", "energenata", "energetski",
+  "hran", "hrana", "namirnic"
+)
+
+banking_sector_keywords <- c(
+  "kredit", "kredita", "kredite", "kreditn", "kreditni", "kreditiranje",
+  "banka", "banke", "bankama", "bankar", "bankarski",
+  "štednj", "stednja", "štednje", "stednje", "štednju", "stednju",
+  "zajam", "zajma", "zajmov",
+  "depozit", "depozita", "depozite",
+  "kamata na kredit", "stambeni kredit", "potrošački kredit",
+  "hipotekar", "hipoteka",
+  "odobreni kredit", "plasman"
+)
+
+economic_conditions_keywords <- c(
+  "gospodars", "gospodarstvo", "gospodarstva", "gospodarski",
+  "bdp", "bruto domaći", "bruto domaci",
+  "rast", "rasta", "rastu", "rastom",
+  "pad", "pada", "padu",
+  "recesij", "recesija", "recesije",
+  "oporavak", "oporavka",
+  "nezaposlen", "nezaposlenost", "nezaposlenih",
+  "zapošljavan", "zaposljavanje",
+  "izvoz", "izvoza", "uvoz", "uvoza",
+  "industrijska proizvodnja", "proizvodnj"
+)
+
+financial_regulation_keywords <- c(
+  "nadzor", "nadzora", "nadzoru", "nadzorn",
+  "regulacij", "regulacija", "regulacije", "regulatorn",
+  "stabilnost", "stabilnosti", "financijska stabilnost",
+  "propisi", "propisa", "propisima",
+  "supervizij", "supervizija",
+  "kapital", "kapitala", "adekvatnost",
+  "rizik", "rizika", "rizike", "rizičn",
+  "bonitet", "boniteta", "bonitetn",
+  "compliance", "usklađenost", "uskladjenost"
+)
+
+political_keywords <- c(
+  "vlada", "vlade", "vladi", "vladin",
+  "sabor", "sabora", "saborski",
+  "ministar", "ministra", "ministarstvo",
+  "predsjednik", "predsjednika", "premijer",
+  "hdz", "sdp", "politič", "politic", "stranka",
+  "europska unija", "europske unije", "eu",
+  "bruxelles", "brisel",
+  "zakon", "zakona", "zakonu", "zakonski"
+)
+
+consumer_finance_keywords <- c(
+  "mjenjačnic", "mjenjacnica", "mjenjačnice", "mjenjacnice",
+  "plaćanj", "placanje", "plaćanja", "placanja",
+  "transakcij", "transakcija", "transakcije",
+  "kartic", "kartica", "kartice", "kartični",
+  "bankomat", "bankomata",
+  "građan", "gradjan", "građana", "gradjana", "potrošač", "potrosac",
+  "račun", "racun", "računa", "racuna",
+  "internetsko bankarstvo", "mobilno bankarstvo"
+)
+
+assign_category <- function(words, topic_num) {
+  words_str <- tolower(paste(words, collapse = " "))
+  
+  scores <- c(
+    "Monetary Policy" = sum(sapply(monetary_policy_keywords, function(k) grepl(k, words_str))),
+    "Euro Transition" = sum(sapply(euro_transition_keywords, function(k) grepl(k, words_str))),
+    "Inflation/Prices" = sum(sapply(inflation_keywords, function(k) grepl(k, words_str))),
+    "Banking Sector" = sum(sapply(banking_sector_keywords, function(k) grepl(k, words_str))),
+    "Economic Conditions" = sum(sapply(economic_conditions_keywords, function(k) grepl(k, words_str))),
+    "Financial Regulation" = sum(sapply(financial_regulation_keywords, function(k) grepl(k, words_str))),
+    "Political/Institutional" = sum(sapply(political_keywords, function(k) grepl(k, words_str))),
+    "Consumer Finance" = sum(sapply(consumer_finance_keywords, function(k) grepl(k, words_str)))
+  )
+  
+  if (max(scores) == 0) return("Other")
+  
+  max_score <- max(scores)
+  winners <- names(scores[scores == max_score])
+  
+  priority <- c("Monetary Policy", "Euro Transition", "Inflation/Prices",
+                "Banking Sector", "Financial Regulation", "Economic Conditions",
+                "Political/Institutional", "Consumer Finance")
+  
+  for (p in priority) {
+    if (p %in% winners) return(p)
+  }
+  
+  return(winners[1])
+}
+
+for (i in 1:K) {
+  topic_taxonomy$Category[i] <- assign_category(topic_words_list[[i]], i)
+  top_frex <- topic_words$frex[i, 1:3]
+  topic_taxonomy$Label[i] <- paste(top_frex, collapse = ", ")
+}
+
+topic_taxonomy %>%
+  arrange(Category, Topic) %>%
+  left_join(topic_prev_df %>% select(Topic, Prevalence) %>%
+              mutate(Topic = as.numeric(as.character(Topic))), by = "Topic") %>%
+  mutate(Prevalence = sprintf("%.2f%%", Prevalence)) %>%
+  kable(col.names = c("Topic", "Category", "Top FREX Words", "Prevalence")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  scroll_box(height = "500px")
+```
+
+## Category Distribution
+
+```{r category-distribution}
+#| label: category-distribution
+#| fig-height: 7
+
+category_prevalence <- topic_taxonomy %>%
+  left_join(topic_prev_df %>%
+              mutate(Topic = as.numeric(as.character(Topic))), by = "Topic") %>%
+  group_by(Category) %>%
+  summarise(
+    Topics = n(),
+    Total_Prevalence = sum(Prevalence, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(Total_Prevalence))
+
+ggplot(category_prevalence, aes(x = reorder(Category, Total_Prevalence),
+                                y = Total_Prevalence, fill = Category)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = sprintf("%.1f%%\n(%d topics)", Total_Prevalence, Topics)),
+            hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  scale_fill_manual(values = topic_category_colors) +
+  scale_y_continuous(limits = c(0, max(category_prevalence$Total_Prevalence) * 1.3),
+                     labels = function(x) paste0(x, "%")) +
+  labs(
+    title = "Thematic Category Distribution in HNB Coverage",
+    subtitle = "Aggregated prevalence by topic category",
+    x = NULL,
+    y = "Total Prevalence (%)"
+  ) +
+  theme(legend.position = "none")
+```
+
+# Analysis 2.3: Topic by Actor Mapping
+
+Examine how different actor types specialize in particular topics.
+
+## Understanding Actor Topic Relationships
+
+Different actors in central bank coverage have distinct communication priorities. HNB Official sources may focus on policy announcements, while media may emphasize consumer impact and political angles.
+
+**Lift interpretation:**
+
+- **Lift = 1.0:** Actor discusses this topic at the same rate as overall corpus
+- **Lift > 1.0:** Actor specializes in this topic
+- **Lift < 1.0:** Actor underrepresents this topic
+
+```{r topic-actor-prep}
+#| label: topic-actor-prep
+
+doc_topics <- stm_model$theta
+colnames(doc_topics) <- paste0("Topic_", 1:K)
+
+doc_meta <- stm_dfm$meta
+doc_meta <- cbind(doc_meta, doc_topics)
+
+actor_topic_means <- doc_meta %>%
+  group_by(actor_type) %>%
+  summarise(across(starts_with("Topic_"), mean, na.rm = TRUE), .groups = "drop")
+
+actor_topic_long <- actor_topic_means %>%
+  pivot_longer(cols = starts_with("Topic_"),
+               names_to = "Topic",
+               values_to = "Proportion") %>%
+  mutate(Topic_Num = as.numeric(gsub("Topic_", "", Topic)))
+```
+
+## Topic Proportions by Actor Type Heatmap
+
+```{r actor-topic-heatmap}
+#| label: actor-topic-heatmap
+#| fig-height: 9
+#| fig-width: 11
+
+actor_topic_matrix <- actor_topic_means %>%
+  column_to_rownames("actor_type") %>%
+  as.matrix()
+
+colnames(actor_topic_matrix) <- 1:K
+
+pheatmap(
+  t(actor_topic_matrix) * 100,
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  color = colorRampPalette(c("white", "#2c5f7c", "#1a3c5a"))(100),
+  main = "Topic Proportions by Actor Type (%)",
+  fontsize = 10,
+  fontsize_row = 8,
+  fontsize_col = 9,
+  angle_col = 45,
+  display_numbers = FALSE,
+  border_color = "grey90"
+)
+```
+
+## Actor Specialization Index
+
+Top 3 topics where each actor type most strongly overindexes.
+
+```{r actor-specialization}
+#| label: actor-specialization
+
+corpus_avg <- colMeans(doc_topics)
+
+specialization_df <- actor_topic_long %>%
+  left_join(tibble(Topic_Num = 1:K, Corpus_Avg = corpus_avg), by = "Topic_Num") %>%
+  mutate(
+    Lift = Proportion / Corpus_Avg,
+    Log_Lift = log2(Lift)
+  ) %>%
+  left_join(topic_taxonomy %>% select(Topic, Category, Label) %>%
+              rename(Topic_Num = Topic), by = "Topic_Num")
+
+top_specializations <- specialization_df %>%
+  filter(is.finite(Log_Lift)) %>%
+  group_by(actor_type) %>%
+  slice_max(Log_Lift, n = 3) %>%
+  ungroup()
+
+top_specializations %>%
+  select(actor_type, Label, Category, Lift) %>%
+  mutate(Lift = sprintf("%.2fx", Lift)) %>%
+  arrange(actor_type) %>%
+  kable(col.names = c("Actor Type", "Topic", "Category", "Lift vs Corpus")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  scroll_box(height = "400px")
+```
+
+## Actor Type Category Profiles
+
+```{r actor-profiles}
+#| label: actor-profiles
+#| fig-height: 10
+#| fig-width: 12
+
+category_by_actor <- specialization_df %>%
+  group_by(actor_type, Category) %>%
+  summarise(Category_Proportion = sum(Proportion), .groups = "drop")
+
+ggplot(category_by_actor, aes(x = Category, y = Category_Proportion, fill = Category)) +
+  geom_col(width = 0.7) +
+  facet_wrap(~actor_type, scales = "free_y", ncol = 3) +
+  scale_fill_manual(values = topic_category_colors) +
+  scale_y_continuous(labels = function(x) paste0(round(x * 100, 1), "%")) +
+  labs(
+    title = "Thematic Category Profiles by Actor Type",
+    subtitle = "What each actor type talks about in HNB coverage",
+    x = NULL,
+    y = "Proportion of Content"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+    legend.position = "none",
+    strip.text = element_text(face = "bold")
+  )
+```
+
+# Analysis 2.4: Topic by Period Mapping
+
+How did topics shift with euro adoption?
+
+```{r period-topic-prep}
+#| label: period-topic-prep
+
+period_topic_means <- doc_meta %>%
+  group_by(period) %>%
+  summarise(across(starts_with("Topic_"), mean, na.rm = TRUE), .groups = "drop")
+
+period_topic_long <- period_topic_means %>%
+  pivot_longer(cols = starts_with("Topic_"),
+               names_to = "Topic",
+               values_to = "Proportion") %>%
+  mutate(Topic_Num = as.numeric(gsub("Topic_", "", Topic))) %>%
+  left_join(topic_taxonomy %>% select(Topic, Category, Label) %>%
+              rename(Topic_Num = Topic), by = "Topic_Num")
+```
+
+## Topic Shift: ERM II to Euro Era
+
+```{r period-comparison}
+#| label: period-comparison
+#| fig-height: 8
+
+period_wide <- period_topic_long %>%
+  select(period, Topic_Num, Proportion, Label) %>%
+  pivot_wider(names_from = period, values_from = Proportion) %>%
+  mutate(
+    Change = `Euro Era` - `ERM II`,
+    Pct_Change = Change / `ERM II` * 100
+  ) %>%
+  arrange(desc(abs(Change)))
+
+period_wide %>%
+  head(15) %>%
+  mutate(
+    `ERM II` = sprintf("%.1f%%", `ERM II` * 100),
+    `Euro Era` = sprintf("%.1f%%", `Euro Era` * 100),
+    Change = sprintf("%+.1f pp", Change * 100)
+  ) %>%
+  kable(col.names = c("Topic", "Label", "ERM II", "Euro Era", "Change", "% Change")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Category Distribution by Period
+
+```{r period-category}
+#| label: period-category
+#| fig-height: 6
+
+category_by_period <- period_topic_long %>%
+  group_by(period, Category) %>%
+  summarise(Category_Proportion = sum(Proportion), .groups = "drop")
+
+ggplot(category_by_period, aes(x = period, y = Category_Proportion, fill = Category)) +
+  geom_col(position = "fill", width = 0.6) +
+  scale_fill_manual(values = topic_category_colors) +
+  scale_y_continuous(labels = percent) +
+  labs(
+    title = "Thematic Composition: ERM II vs Euro Era",
+    subtitle = "How coverage focus shifted with euro adoption",
+    x = "Period",
+    y = "Proportion",
+    fill = "Category"
+  ) +
+  theme(legend.position = "right")
+```
+
+# Analysis 2.5: Topic Attention Differential
+
+Which topics generate more attention (REACH)?
+
+This analysis addresses a key hypothesis: that certain types of content generate disproportionately high attention compared to their prevalence.
+
+```{r engagement-prep}
+#| label: engagement-prep
+
+# Get REACH values aligned with the sampled documents
+doc_reach_vec <- hnb_sample$REACH
+
+# Add REACH directly to doc_meta
+doc_meta_reach <- doc_meta
+doc_meta_reach$REACH <- doc_reach_vec[1:nrow(doc_meta)]
+
+# Calculate topic-level REACH metrics
+topic_reach <- lapply(1:K, function(t) {
+  topic_col <- paste0("Topic_", t)
+  weights <- doc_meta_reach[[topic_col]]
+  reach_vals <- doc_meta_reach$REACH
+  
+  data.frame(
+    Topic = t,
+    Weighted_Mean_REACH = weighted.mean(reach_vals, weights, na.rm = TRUE),
+    Mean_REACH = mean(reach_vals[weights > 0.1], na.rm = TRUE),
+    Total_REACH = sum(reach_vals * weights, na.rm = TRUE),
+    Document_Count = sum(weights > 0.1)
+  )
+}) %>% bind_rows()
+
+topic_reach <- topic_reach %>%
+  left_join(topic_taxonomy, by = "Topic") %>%
+  left_join(topic_prev_df %>%
+              mutate(Topic = as.numeric(as.character(Topic))), by = "Topic")
+```
+
+## Topic REACH Ranking
+
+```{r topic-reach-chart}
+#| label: topic-reach-chart
+#| fig-height: 9
+
+ggplot(topic_reach, aes(x = reorder(factor(Topic), Weighted_Mean_REACH),
+                        y = Weighted_Mean_REACH, fill = Category)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = format(round(Weighted_Mean_REACH, 0), big.mark = ",")),
+            hjust = -0.1, size = 3) +
+  coord_flip() +
+  scale_fill_manual(values = topic_category_colors) +
+  scale_y_continuous(limits = c(0, max(topic_reach$Weighted_Mean_REACH, na.rm = TRUE) * 1.15),
+                     labels = comma) +
+  labs(
+    title = "Average REACH by Topic",
+    subtitle = "Weighted mean REACH per document",
+    x = "Topic",
+    y = "Weighted Mean REACH",
+    fill = "Category"
+  )
+```
+
+## Volume vs Attention Comparison
+
+Topics above the trend line generate more attention than expected given their prevalence.
+
+```{r volume-vs-reach}
+#| label: volume-vs-reach
+#| fig-height: 8
+
+ggplot(topic_reach, aes(x = Prevalence, y = Weighted_Mean_REACH)) +
+  geom_point(aes(color = Category, size = Total_REACH), alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", color = "gray50") +
+  geom_text_repel(aes(label = Topic), size = 3, max.overlaps = 15) +
+  scale_color_manual(values = topic_category_colors) +
+  scale_size_continuous(labels = comma, name = "Total REACH") +
+  scale_x_continuous(labels = function(x) paste0(x, "%")) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Topic Prevalence vs Average REACH",
+    subtitle = "Points above line = overperforming in attention",
+    x = "Topic Prevalence (%)",
+    y = "Weighted Mean REACH",
+    color = "Category"
+  )
+```
+
+## Category REACH Comparison
+
+```{r category-reach}
+#| label: category-reach
+#| fig-height: 6
+
+category_reach <- topic_reach %>%
+  group_by(Category) %>%
+  summarise(
+    Topics = n(),
+    Total_Prevalence = sum(Prevalence, na.rm = TRUE),
+    Mean_REACH = weighted.mean(Weighted_Mean_REACH, Prevalence, na.rm = TRUE),
+    Total_REACH = sum(Total_REACH, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    REACH_Share = Total_REACH / sum(Total_REACH) * 100,
+    Efficiency = REACH_Share / Total_Prevalence
+  )
+
+category_reach %>%
+  arrange(desc(Efficiency)) %>%
+  mutate(
+    Total_Prevalence = sprintf("%.1f%%", Total_Prevalence),
+    REACH_Share = sprintf("%.1f%%", REACH_Share),
+    Mean_REACH = format(round(Mean_REACH, 0), big.mark = ","),
+    Efficiency = sprintf("%.2fx", Efficiency)
+  ) %>%
+  kable(col.names = c("Category", "Topics", "Prevalence", "Mean REACH",
+                      "Total REACH", "REACH Share", "Efficiency")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+# Summary and Key Findings
+
+```{r summary-stats}
+#| label: summary-stats
+
+top_category <- category_prevalence %>%
+  slice_max(Total_Prevalence, n = 1)
+top_cat_name <- top_category$Category[1]
+top_cat_prev <- round(top_category$Total_Prevalence[1], 1)
+
+top_reach_cat <- category_reach %>%
+  slice_max(Mean_REACH, n = 1)
+top_reach_name <- top_reach_cat$Category[1]
+```
+
+## Thematic Structure Findings
+
+1. **Dominant themes:** The corpus is dominated by **`r top_cat_name`** content (`r top_cat_prev`% prevalence)
+
+2. **Attention patterns:** **`r top_reach_name`** content generates the highest average REACH
+
+3. **Actor specialization:** Clear patterns emerge in what different actors discuss
+   - HNB Official likely focuses on monetary policy and regulatory topics
+   - General Media likely emphasizes consumer impact and political angles
+
+4. **Period differences:** Thematic composition shifted between ERM II and Euro Era periods
+
+## Hypotheses Assessment
+
+| Hypothesis | Map 2 Evidence |
+|------------|----------------|
+| H3: Negativity bias | Examine which topics generate highest REACH relative to prevalence |
+| H4: Event driven spikes | Topic temporal patterns show policy event clustering |
+| H5: Euro structural break | Category distribution differs between ERM II and Euro Era |
+
+---
+
+# Appendix: Model Diagnostics
+
+```{r model-diagnostics}
+#| label: model-diagnostics
+
+cat("Topic Model Summary:\n")
+cat("Number of topics:", K, "\n")
+cat("Documents:", nrow(doc_topics), "\n")
+cat("Vocabulary size:", length(stm_model$vocab), "\n")
+cat("Sample percentage:", SAMPLE_PCT * 100, "%\n")
+```
+
+```{r session-info}
+#| label: session-info
+
+sessionInfo()
+```

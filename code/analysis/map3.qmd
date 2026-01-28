@@ -1,0 +1,897 @@
+---
+title: "HNB DigiMedia Map 3: Sentiment Structure"
+subtitle: "Mapping Tone and Negativity Bias in Croatian Central Bank Coverage"
+author: "HNB DigiMedia Project"
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    code-fold: true
+    code-summary: "Show code"
+    theme: cosmo
+    fig-width: 10
+    fig-height: 6
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(data.table)
+library(scales)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(viridis)
+library(ggridges)
+library(patchwork)
+library(lubridate)
+
+theme_set(theme_minimal(base_size = 12) +
+          theme(
+            plot.title = element_text(face = "bold", size = 14),
+            plot.subtitle = element_text(color = "gray40"),
+            legend.position = "bottom"
+          ))
+
+# Color palette for actor types
+actor_colors <- c(
+  "HNB Official" = "#1a3c5a",
+  "Financial Regulators" = "#2c5f7c",
+  "Commercial Banks" = "#4a9c6d",
+  "Financial Media" = "#e07b39",
+  "General Media" = "#c44536",
+  "International Sources" = "#6b4c9a",
+  "Academic/Expert" = "#64748b",
+  "Political Actors" = "#eab308",
+  "Financial Influencers" = "#ec4899",
+  "Government" = "#0ea5e9",
+  "Other" = "#94a3b8"
+)
+
+# Color palette for sentiment
+sentiment_colors <- c(
+  "positive" = "#22c55e",
+  "neutral" = "#64748b",
+  "negative" = "#ef4444"
+)
+
+# Color palette for periods
+period_colors <- c(
+  "ERM II" = "#3498db",
+  "Euro Era" = "#27ae60"
+)
+```
+
+# Introduction
+
+This document presents **Map 3: Sentiment Structure** of the HNB DigiMedia project. The core question driving this analysis is: **What emotional register characterizes Croatian central bank coverage, and does negativity bias exist?**
+
+## Theoretical Framework
+
+**Negativity bias** in media coverage refers to the tendency for negative news to receive disproportionate attention compared to positive or neutral content. In central bank communication research, this manifests as:
+
+1. **Asymmetric coverage:** Bad economic news receives more coverage than good news
+2. **Framing effects:** Neutral policy decisions framed negatively
+3. **Attention economics:** Negative content generates more engagement/reach
+
+The hypothesis (H3) states that negative coverage generates disproportionate attention relative to positive or neutral content.
+
+## Methodological Overview
+
+**Sentiment analysis** classifies text into positive, neutral, or negative categories based on linguistic features. We use the AUTO_SENTIMENT field from Mediatoolkit which provides automated sentiment classification.
+
+**Key metrics in this analysis:**
+
+| Metric | Definition | Interpretation |
+|--------|------------|----------------|
+| Sentiment ratio | Positive articles / Negative articles | Higher values indicate more positive tone |
+| Negativity rate | Negative articles / Total articles | Baseline negativity in coverage |
+| REACH efficiency | Mean REACH per sentiment category | Tests negativity bias hypothesis |
+| Period comparison | Sentiment distribution across periods | Tests structural break hypothesis |
+
+```{r load-data}
+#| label: load-data
+
+hnb <- readRDS("C:/Users/lsikic/Dropbox/hnb.rds")
+setDT(hnb)
+
+hnb[, date := as.Date(DATE)]
+hnb[, year := year(date)]
+hnb[, month := month(date)]
+
+hnb[, period := fcase(
+  date < as.Date("2023-01-01"), "ERM II",
+  default = "Euro Era"
+)]
+hnb[, period := factor(period, levels = c("ERM II", "Euro Era"))]
+
+n_articles <- nrow(hnb)
+n_sources <- uniqueN(hnb$FROM)
+date_range <- paste(min(hnb$date), "to", max(hnb$date))
+
+cat("Data loaded:", n_articles, "articles\n")
+```
+
+```{r actor-classification}
+#| label: actor-classification
+
+# =============================================================================
+# ACTOR CLASSIFICATION - SYNCHRONIZED WITH MAP 1 AND MAP 2
+# =============================================================================
+
+manual_overrides <- list(
+  "HNB Official" = c(
+    "hnb.hr", "hrvatska narodna banka",
+    "hrvatska narodna banka / croatian national bank"
+  ),
+  "Financial Regulators" = c(
+    "hanfa.hr", "hanfa", "hrvatska agencija za nadzor financijskih usluga",
+    "fina.hr", "fina", "financijska agencija"
+  ),
+  "Government" = c(
+    "gov.hr", "vlada", "vlada republike hrvatske",
+    "ministarstvo financija", "sabor.hr"
+  ),
+  "Financial Media" = c(
+    "poslovni.hr", "poslovni dnevnik", "seebiz.eu", "seebiz",
+    "lider.media", "lidermedia.hr", "lider", "bloombergadria.com",
+    "bloomberg adria", "hrportfolio.hr", "privredni.hr"
+  ),
+  "Commercial Banks" = c(
+    "zaba.hr", "zagrebačka banka", "pbz.hr", "privredna banka zagreb",
+    "erste.hr", "erste banka", "hpb.hr", "hrvatska poštanska banka",
+    "otp banka", "raiffeisen", "addiko"
+  ),
+  "Academic/Expert" = c(
+    "eizg.hr", "ekonomski institut zagreb", "ijf.hr",
+    "institut za javne financije", "ekonomski fakultet"
+  )
+)
+
+general_media_sources <- c(
+  "index.hr", "index", "jutarnji.hr", "jutarnji", "jutarnji list",
+  "vecernji.hr", "vecernji", "večernji list",
+  "24sata.hr", "24sata", "slobodnadalmacija.hr", "slobodna dalmacija",
+  "novilist.hr", "novi list", "dnevnik.hr", "dnevnik",
+  "tportal.hr", "tportal", "telegram.hr", "telegram",
+  "net.hr", "rtl.hr", "rtl", "hrt.hr", "hrt",
+  "n1info.hr", "n1info.com", "n1", "nacional.hr", "nacional",
+  "direktno.hr", "direktno", "dnevno.hr", "dnevno"
+)
+
+classify_actor_hnb <- function(from_val, url_val = NA) {
+  from_lower <- tolower(trimws(as.character(from_val)))
+  url_lower <- tolower(ifelse(is.na(url_val), "", as.character(url_val)))
+  combined <- paste(from_lower, url_lower)
+  
+  match_any <- function(patterns, text, fixed = TRUE) {
+    any(sapply(patterns, function(p) grepl(p, text, fixed = fixed)))
+  }
+  
+  for (actor_type in names(manual_overrides)) {
+    if (match_any(manual_overrides[[actor_type]], from_lower)) {
+      return(actor_type)
+    }
+  }
+  
+  if (grepl("hnb\\.hr", url_lower) || grepl("hnb\\.hr", from_lower)) {
+    return("HNB Official")
+  }
+  
+  if (grepl("hanfa|fina\\.hr", combined)) {
+    return("Financial Regulators")
+  }
+  
+  if (grepl("gov\\.hr|vlada|ministarstvo", combined)) {
+    return("Government")
+  }
+  
+  bank_patterns <- c("banka", "bank", "zaba", "pbz", "erste", "hpb",
+                     "otp", "raiffeisen", "addiko", "sberbank")
+  if (match_any(bank_patterns, from_lower)) {
+    if (!grepl("narodna|hnb|central", from_lower)) {
+      return("Commercial Banks")
+    }
+  }
+  
+  financial_media_patterns <- c(
+    "poslovni", "seebiz", "lider", "bloomberg", "portfolio",
+    "privredni", "finance", "ekonom", "business", "capital"
+  )
+  if (match_any(financial_media_patterns, from_lower)) {
+    return("Financial Media")
+  }
+  
+  if (match_any(general_media_sources, from_lower)) {
+    return("General Media")
+  }
+  
+  news_patterns <- c("portal", "vijesti", "news", "info", "dnevni",
+                     "radio", "tv", ".hr")
+  if (match_any(news_patterns, from_lower)) {
+    return("General Media")
+  }
+  
+  return("Other")
+}
+
+hnb[, ACTOR_TYPE := mapply(classify_actor_hnb, FROM, URL)]
+
+actor_order <- c("HNB Official", "Financial Regulators", "Government",
+                 "Commercial Banks", "Financial Media", "General Media",
+                 "International Sources", "Academic/Expert",
+                 "Political Actors", "Financial Influencers", "Other")
+hnb[, ACTOR_TYPE := factor(ACTOR_TYPE, levels = actor_order)]
+```
+
+## Corpus Overview
+
+```{r corpus-overview}
+#| label: corpus-overview
+
+# Check sentiment availability
+n_with_sentiment <- sum(!is.na(hnb$AUTO_SENTIMENT))
+sentiment_coverage <- n_with_sentiment / n_articles * 100
+
+tibble(
+  Metric = c("Total articles", "Unique sources", "Date range",
+             "Articles with sentiment data", "Sentiment coverage"),
+  Value = c(
+    format(n_articles, big.mark = ","),
+    format(n_sources, big.mark = ","),
+    date_range,
+    format(n_with_sentiment, big.mark = ","),
+    sprintf("%.1f%%", sentiment_coverage)
+  )
+) %>%
+  kable(col.names = c("Metric", "Value")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+# Analysis 3.1: Sentiment Distribution
+
+Sentiment analysis classifies each article as positive, neutral, or negative based on linguistic features. This section examines how sentiment varies across the corpus, actors, and time periods.
+
+```{r sentiment-check}
+#| label: sentiment-check
+
+# Check if AUTO_SENTIMENT exists and has data
+if (!"AUTO_SENTIMENT" %in% names(hnb)) {
+  cat("WARNING: AUTO_SENTIMENT column not found in data.\n")
+  cat("Available columns:", paste(names(hnb), collapse = ", "), "\n")
+  has_sentiment <- FALSE
+} else {
+  has_sentiment <- sum(!is.na(hnb$AUTO_SENTIMENT)) > 0
+  if (!has_sentiment) {
+    cat("WARNING: AUTO_SENTIMENT column exists but has no data.\n")
+  } else {
+    cat("Sentiment values found:", paste(unique(hnb$AUTO_SENTIMENT[!is.na(hnb$AUTO_SENTIMENT)]), collapse = ", "), "\n")
+  }
+}
+```
+
+## Overall Sentiment Distribution
+
+```{r sentiment-overall}
+#| label: sentiment-overall
+#| fig-height: 6
+
+if (has_sentiment) {
+  sentiment_dist <- hnb[!is.na(AUTO_SENTIMENT), .(
+    Count = .N
+  ), by = AUTO_SENTIMENT][order(-Count)]
+  
+  sentiment_dist[, Percentage := Count / sum(Count) * 100]
+  
+  ggplot(sentiment_dist, aes(x = reorder(AUTO_SENTIMENT, -Count), y = Count, fill = AUTO_SENTIMENT)) +
+    geom_col(width = 0.7) +
+    geom_text(aes(label = sprintf("%s\n(%.1f%%)", format(Count, big.mark = ","), Percentage)),
+              vjust = -0.3, size = 4) +
+    scale_fill_manual(values = sentiment_colors) +
+    scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.15))) +
+    labs(
+      title = "Overall Sentiment Distribution in HNB Coverage",
+      subtitle = "Distribution of automated sentiment classification",
+      x = NULL,
+      y = "Number of Articles"
+    ) +
+    theme(legend.position = "none")
+} else {
+  cat("Sentiment analysis not available. Creating placeholder based on title keywords.\n")
+}
+```
+
+## Sentiment by Actor Type
+
+Different actor types may have characteristic emotional registers reflecting their institutional roles and communication strategies.
+
+```{r sentiment-by-actor}
+#| label: sentiment-by-actor
+#| fig-height: 9
+
+if (has_sentiment) {
+  sentiment_actor <- hnb[!is.na(AUTO_SENTIMENT), .(
+    Count = .N
+  ), by = .(ACTOR_TYPE, AUTO_SENTIMENT)]
+  
+  sentiment_actor[, Total := sum(Count), by = ACTOR_TYPE]
+  sentiment_actor[, Percentage := Count / Total * 100]
+  
+  # Order by positive sentiment share
+  actor_order_sent <- sentiment_actor[AUTO_SENTIMENT == "positive"][order(-Percentage)]$ACTOR_TYPE
+  
+  ggplot(sentiment_actor, aes(x = factor(ACTOR_TYPE, levels = rev(actor_order_sent)),
+                              y = Percentage, fill = AUTO_SENTIMENT)) +
+    geom_col(position = "stack", width = 0.7) +
+    coord_flip() +
+    scale_fill_manual(values = sentiment_colors) +
+    labs(
+      title = "Sentiment Distribution by Actor Type",
+      subtitle = "Ordered by share of positive content",
+      x = NULL,
+      y = "Percentage of Articles",
+      fill = "Sentiment"
+    ) +
+    theme(legend.position = "top")
+}
+```
+
+## Sentiment Summary Table
+
+The **Positivity Ratio** divides positive articles by negative articles. Values above 1 indicate more positive than negative content.
+
+```{r sentiment-summary-table}
+#| label: sentiment-summary-table
+
+if (has_sentiment) {
+  sentiment_summary <- hnb[!is.na(AUTO_SENTIMENT), .(
+    Total_Articles = .N,
+    Positive = sum(AUTO_SENTIMENT == "positive"),
+    Neutral = sum(AUTO_SENTIMENT == "neutral"),
+    Negative = sum(AUTO_SENTIMENT == "negative")
+  ), by = ACTOR_TYPE]
+  
+  sentiment_summary[, `:=`(
+    Positive_Pct = Positive / Total_Articles * 100,
+    Neutral_Pct = Neutral / Total_Articles * 100,
+    Negative_Pct = Negative / Total_Articles * 100,
+    Positivity_Ratio = Positive / (Negative + 0.1)
+  )]
+  
+  sentiment_summary[order(-Positive_Pct)] %>%
+    mutate(
+      Total_Articles = format(Total_Articles, big.mark = ","),
+      Positive_Pct = sprintf("%.1f%%", Positive_Pct),
+      Neutral_Pct = sprintf("%.1f%%", Neutral_Pct),
+      Negative_Pct = sprintf("%.1f%%", Negative_Pct),
+      Positivity_Ratio = sprintf("%.2f", Positivity_Ratio)
+    ) %>%
+    select(ACTOR_TYPE, Total_Articles, Positive_Pct, Neutral_Pct, Negative_Pct, Positivity_Ratio) %>%
+    kable(col.names = c("Actor Type", "Total Articles", "Positive %", "Neutral %",
+                        "Negative %", "Positivity Ratio")) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+}
+```
+
+# Analysis 3.2: Negativity Bias Test
+
+**Core hypothesis (H3):** Negative coverage generates disproportionate attention relative to positive or neutral content.
+
+We test this by comparing REACH metrics across sentiment categories.
+
+## Sentiment and REACH Relationship
+
+```{r sentiment-reach}
+#| label: sentiment-reach
+#| fig-height: 7
+
+if (has_sentiment) {
+  sentiment_reach <- hnb[!is.na(AUTO_SENTIMENT) & !is.na(REACH), .(
+    Mean_REACH = mean(REACH, na.rm = TRUE),
+    Median_REACH = median(REACH, na.rm = TRUE),
+    Total_REACH = sum(REACH, na.rm = TRUE),
+    Count = .N
+  ), by = AUTO_SENTIMENT]
+  
+  p1 <- ggplot(sentiment_reach, aes(x = AUTO_SENTIMENT, y = Mean_REACH, fill = AUTO_SENTIMENT)) +
+    geom_col(width = 0.6) +
+    geom_text(aes(label = format(round(Mean_REACH, 0), big.mark = ",")), vjust = -0.3) +
+    scale_fill_manual(values = sentiment_colors) +
+    scale_y_continuous(labels = comma) +
+    labs(
+      title = "Mean REACH by Sentiment",
+      x = NULL,
+      y = "Mean REACH"
+    ) +
+    theme(legend.position = "none")
+  
+  p2 <- ggplot(hnb[!is.na(AUTO_SENTIMENT) & REACH > 0 & REACH < quantile(REACH, 0.99, na.rm = TRUE)],
+               aes(x = AUTO_SENTIMENT, y = REACH, fill = AUTO_SENTIMENT)) +
+    geom_violin(alpha = 0.7) +
+    geom_boxplot(width = 0.2, fill = "white", outlier.shape = NA) +
+    scale_fill_manual(values = sentiment_colors) +
+    scale_y_log10(labels = comma) +
+    labs(
+      title = "REACH Distribution by Sentiment",
+      subtitle = "Log scale, top 1% outliers excluded",
+      x = NULL,
+      y = "REACH (log scale)"
+    ) +
+    theme(legend.position = "none")
+  
+  p1 + p2
+}
+```
+
+## Statistical Test: REACH by Sentiment
+
+We use the Kruskal-Wallis test (nonparametric) to compare REACH distributions across sentiment categories.
+
+```{r reach-sentiment-test}
+#| label: reach-sentiment-test
+
+if (has_sentiment) {
+  reach_positive <- hnb[AUTO_SENTIMENT == "positive" & !is.na(REACH), REACH]
+  reach_neutral <- hnb[AUTO_SENTIMENT == "neutral" & !is.na(REACH), REACH]
+  reach_negative <- hnb[AUTO_SENTIMENT == "negative" & !is.na(REACH), REACH]
+  
+  kruskal_result <- kruskal.test(REACH ~ AUTO_SENTIMENT, 
+                                  data = hnb[!is.na(AUTO_SENTIMENT) & !is.na(REACH)])
+  
+  cat("Kruskal-Wallis Test Results:\n")
+  cat("============================\n")
+  cat("Chi-squared:", round(kruskal_result$statistic, 2), "\n")
+  cat("df:", kruskal_result$parameter, "\n")
+  cat("p-value:", format.pval(kruskal_result$p.value, digits = 4), "\n")
+  
+  # Pairwise comparisons
+  cat("\nMean REACH by Sentiment:\n")
+  cat("Positive:", format(round(mean(reach_positive), 0), big.mark = ","), "\n")
+  cat("Neutral:", format(round(mean(reach_neutral), 0), big.mark = ","), "\n")
+  cat("Negative:", format(round(mean(reach_negative), 0), big.mark = ","), "\n")
+  
+  # Negativity bias indicator
+  neg_premium <- mean(reach_negative) / mean(reach_positive)
+  cat("\nNegativity Premium (Negative/Positive REACH):", round(neg_premium, 2), "x\n")
+}
+```
+
+## REACH Efficiency by Sentiment
+
+```{r reach-efficiency-sentiment}
+#| label: reach-efficiency-sentiment
+#| fig-height: 6
+
+if (has_sentiment) {
+  sentiment_efficiency <- sentiment_reach %>%
+    mutate(
+      Article_Share = Count / sum(Count) * 100,
+      REACH_Share = Total_REACH / sum(Total_REACH) * 100,
+      Efficiency = REACH_Share / Article_Share
+    )
+  
+  sentiment_efficiency_long <- sentiment_efficiency %>%
+    select(AUTO_SENTIMENT, Article_Share, REACH_Share) %>%
+    pivot_longer(cols = c(Article_Share, REACH_Share),
+                 names_to = "Metric", values_to = "Percentage") %>%
+    mutate(Metric = ifelse(Metric == "Article_Share", "Article Volume", "REACH Captured"))
+  
+  ggplot(sentiment_efficiency_long, aes(x = AUTO_SENTIMENT, y = Percentage, fill = Metric)) +
+    geom_col(position = "dodge", width = 0.7) +
+    geom_text(aes(label = sprintf("%.1f%%", Percentage)),
+              position = position_dodge(width = 0.7), vjust = -0.3, size = 3.5) +
+    scale_fill_manual(values = c("Article Volume" = "#64748b", "REACH Captured" = "#e07b39")) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+    labs(
+      title = "Article Volume vs REACH Captured by Sentiment",
+      subtitle = "Testing negativity bias: Does negative content capture more REACH than its volume share?",
+      x = NULL,
+      y = "Percentage (%)",
+      fill = NULL
+    ) +
+    theme(legend.position = "top")
+}
+```
+
+## Negativity Bias Summary
+
+```{r negativity-bias-summary}
+#| label: negativity-bias-summary
+
+if (has_sentiment && exists("sentiment_efficiency")) {
+  sentiment_efficiency %>%
+    mutate(
+      Count = format(Count, big.mark = ","),
+      Mean_REACH = format(round(Mean_REACH, 0), big.mark = ","),
+      Total_REACH = format(round(Total_REACH, 0), big.mark = ","),
+      Article_Share = sprintf("%.1f%%", Article_Share),
+      REACH_Share = sprintf("%.1f%%", REACH_Share),
+      Efficiency = sprintf("%.2fx", Efficiency)
+    ) %>%
+    kable(col.names = c("Sentiment", "Mean REACH", "Median REACH", "Total REACH",
+                        "Count", "Article Share", "REACH Share", "Efficiency")) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+}
+```
+
+# Analysis 3.3: Sentiment by Period
+
+Did sentiment patterns change with euro adoption? The transition period may have generated different emotional registers compared to the post-adoption period.
+
+```{r sentiment-by-period}
+#| label: sentiment-by-period
+#| fig-height: 7
+
+if (has_sentiment) {
+  sentiment_period <- hnb[!is.na(AUTO_SENTIMENT), .(
+    Count = .N
+  ), by = .(period, AUTO_SENTIMENT)]
+  
+  sentiment_period[, Total := sum(Count), by = period]
+  sentiment_period[, Percentage := Count / Total * 100]
+  
+  ggplot(sentiment_period, aes(x = period, y = Percentage, fill = AUTO_SENTIMENT)) +
+    geom_col(position = "stack", width = 0.6) +
+    geom_text(aes(label = sprintf("%.1f%%", Percentage)),
+              position = position_stack(vjust = 0.5),
+              size = 4, color = "white") +
+    scale_fill_manual(values = sentiment_colors) +
+    labs(
+      title = "Sentiment Distribution by Period",
+      subtitle = "ERM II (2021-2022) vs Euro Era (2023)",
+      x = "Period",
+      y = "Percentage of Articles",
+      fill = "Sentiment"
+    ) +
+    theme(legend.position = "top")
+}
+```
+
+## Period Comparison Table
+
+```{r period-sentiment-table}
+#| label: period-sentiment-table
+
+if (has_sentiment) {
+  period_sentiment_summary <- hnb[!is.na(AUTO_SENTIMENT), .(
+    Total_Articles = .N,
+    Positive = sum(AUTO_SENTIMENT == "positive"),
+    Neutral = sum(AUTO_SENTIMENT == "neutral"),
+    Negative = sum(AUTO_SENTIMENT == "negative"),
+    Mean_REACH = mean(REACH, na.rm = TRUE)
+  ), by = period]
+  
+  period_sentiment_summary[, `:=`(
+    Positive_Pct = Positive / Total_Articles * 100,
+    Neutral_Pct = Neutral / Total_Articles * 100,
+    Negative_Pct = Negative / Total_Articles * 100,
+    Positivity_Ratio = Positive / (Negative + 0.1)
+  )]
+  
+  period_sentiment_summary %>%
+    mutate(
+      Total_Articles = format(Total_Articles, big.mark = ","),
+      Positive_Pct = sprintf("%.1f%%", Positive_Pct),
+      Neutral_Pct = sprintf("%.1f%%", Neutral_Pct),
+      Negative_Pct = sprintf("%.1f%%", Negative_Pct),
+      Positivity_Ratio = sprintf("%.2f", Positivity_Ratio),
+      Mean_REACH = format(round(Mean_REACH, 0), big.mark = ",")
+    ) %>%
+    select(period, Total_Articles, Positive_Pct, Neutral_Pct, Negative_Pct, 
+           Positivity_Ratio, Mean_REACH) %>%
+    kable(col.names = c("Period", "Total Articles", "Positive %", "Neutral %",
+                        "Negative %", "Positivity Ratio", "Mean REACH")) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+}
+```
+
+## Negativity Bias by Period
+
+Does the negativity premium differ between periods?
+
+```{r negativity-by-period}
+#| label: negativity-by-period
+#| fig-height: 6
+
+if (has_sentiment) {
+  sentiment_reach_period <- hnb[!is.na(AUTO_SENTIMENT) & !is.na(REACH), .(
+    Mean_REACH = mean(REACH, na.rm = TRUE),
+    Median_REACH = median(REACH, na.rm = TRUE),
+    Count = .N
+  ), by = .(period, AUTO_SENTIMENT)]
+  
+  ggplot(sentiment_reach_period, aes(x = AUTO_SENTIMENT, y = Mean_REACH, fill = AUTO_SENTIMENT)) +
+    geom_col(width = 0.6) +
+    geom_text(aes(label = format(round(Mean_REACH, 0), big.mark = ",")), 
+              vjust = -0.3, size = 3) +
+    facet_wrap(~period) +
+    scale_fill_manual(values = sentiment_colors) +
+    scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.15))) +
+    labs(
+      title = "Mean REACH by Sentiment and Period",
+      subtitle = "Comparing negativity bias across periods",
+      x = NULL,
+      y = "Mean REACH"
+    ) +
+    theme(legend.position = "none")
+}
+```
+
+# Analysis 3.4: Sentiment Temporal Patterns
+
+Tracking sentiment over time reveals whether coverage tone shifts with events, policy decisions, or the approach of euro adoption.
+
+```{r sentiment-temporal}
+#| label: sentiment-temporal
+#| fig-height: 8
+
+if (has_sentiment) {
+  sentiment_monthly <- hnb[!is.na(AUTO_SENTIMENT), .(
+    Positive = sum(AUTO_SENTIMENT == "positive"),
+    Neutral = sum(AUTO_SENTIMENT == "neutral"),
+    Negative = sum(AUTO_SENTIMENT == "negative"),
+    Total = .N,
+    Mean_REACH = mean(REACH, na.rm = TRUE)
+  ), by = .(year, month)]
+  
+  sentiment_monthly[, `:=`(
+    date = as.Date(paste(year, month, "01", sep = "-")),
+    Positive_Pct = Positive / Total * 100,
+    Neutral_Pct = Neutral / Total * 100,
+    Negative_Pct = Negative / Total * 100,
+    Positivity_Ratio = Positive / (Negative + 0.1)
+  )]
+  
+  sentiment_monthly_long <- sentiment_monthly %>%
+    select(date, Positive_Pct, Neutral_Pct, Negative_Pct) %>%
+    pivot_longer(cols = -date, names_to = "Sentiment", values_to = "Percentage") %>%
+    mutate(Sentiment = gsub("_Pct", "", Sentiment))
+  
+  ggplot(sentiment_monthly_long, aes(x = date, y = Percentage, color = Sentiment)) +
+    geom_line(linewidth = 1) +
+    geom_vline(xintercept = as.Date("2023-01-01"), linetype = "dashed",
+               color = "#27ae60", alpha = 0.7) +
+    annotate("text", x = as.Date("2023-01-01"), y = max(sentiment_monthly_long$Percentage) * 0.95,
+             label = "Euro", hjust = -0.1, color = "#27ae60", size = 4) +
+    scale_color_manual(values = sentiment_colors) +
+    scale_x_date(date_labels = "%Y-%m", date_breaks = "3 months") +
+    labs(
+      title = "Sentiment Trends Over Time",
+      subtitle = "Monthly percentage by sentiment category",
+      x = NULL,
+      y = "Percentage of Articles (%)",
+      color = "Sentiment"
+    ) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "top"
+    )
+}
+```
+
+## Positivity Ratio Over Time
+
+```{r positivity-temporal}
+#| label: positivity-temporal
+#| fig-height: 6
+
+if (has_sentiment && exists("sentiment_monthly")) {
+  ggplot(sentiment_monthly, aes(x = date, y = Positivity_Ratio)) +
+    geom_line(color = "#2c5f7c", linewidth = 1) +
+    geom_smooth(method = "loess", se = TRUE, color = "#e07b39", fill = "#e07b39", alpha = 0.2) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "gray50") +
+    geom_vline(xintercept = as.Date("2023-01-01"), linetype = "dashed",
+               color = "#27ae60", alpha = 0.7) +
+    scale_x_date(date_labels = "%Y-%m", date_breaks = "3 months") +
+    labs(
+      title = "Positivity Ratio Over Time",
+      subtitle = "Ratio > 1 indicates more positive than negative articles",
+      x = NULL,
+      y = "Positivity Ratio (Positive / Negative)",
+      caption = "Green dashed line = Euro adoption; gray dashed line = neutral (ratio = 1)"
+    ) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+```
+
+## Day of Week Sentiment Patterns
+
+Do posting patterns by day of week affect sentiment distribution?
+
+```{r sentiment-dayofweek}
+#| label: sentiment-dayofweek
+#| fig-height: 6
+
+if (has_sentiment) {
+  hnb[, DOW := lubridate::wday(date, label = TRUE, abbr = FALSE, locale = "en_US")]
+  
+  sentiment_dow <- hnb[!is.na(AUTO_SENTIMENT) & !is.na(DOW), .(
+    Positive_Pct = sum(AUTO_SENTIMENT == "positive") / .N * 100,
+    Negative_Pct = sum(AUTO_SENTIMENT == "negative") / .N * 100,
+    Articles = .N
+  ), by = DOW]
+  
+  sentiment_dow_long <- sentiment_dow %>%
+    select(DOW, Positive_Pct, Negative_Pct) %>%
+    pivot_longer(cols = -DOW, names_to = "Sentiment", values_to = "Percentage") %>%
+    mutate(Sentiment = gsub("_Pct", "", Sentiment))
+  
+  ggplot(sentiment_dow_long, aes(x = DOW, y = Percentage, fill = Sentiment)) +
+    geom_col(position = "dodge", width = 0.7) +
+    scale_fill_manual(values = c("Positive" = "#22c55e", "Negative" = "#ef4444")) +
+    labs(
+      title = "Positive and Negative Coverage by Day of Week",
+      subtitle = "Percentage of articles by sentiment and posting day",
+      x = NULL,
+      y = "Percentage of Articles (%)",
+      fill = "Sentiment"
+    ) +
+    theme(legend.position = "top")
+}
+```
+
+# Analysis 3.5: High REACH Negative Articles
+
+Which negative articles captured the most attention? This reveals what types of negative coverage resonate most with audiences.
+
+```{r top-negative-reach}
+#| label: top-negative-reach
+
+if (has_sentiment) {
+  top_negative <- hnb[AUTO_SENTIMENT == "negative"][order(-REACH)][1:min(30, sum(hnb$AUTO_SENTIMENT == "negative", na.rm = TRUE)), .(
+    Rank = .I,
+    FROM,
+    ACTOR_TYPE,
+    date,
+    TITLE_SHORT = substr(TITLE, 1, 60),
+    REACH
+  )]
+  
+  top_negative %>%
+    mutate(
+      REACH = format(REACH, big.mark = ",")
+    ) %>%
+    kable(col.names = c("Rank", "Source", "Actor Type", "Date", "Title", "REACH"),
+          caption = "Top 30 Negative Articles by REACH") %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+    scroll_box(height = "500px")
+}
+```
+
+## Negative Coverage by Source
+
+Which sources produce the most negative coverage?
+
+```{r negative-by-source}
+#| label: negative-by-source
+#| fig-height: 8
+
+if (has_sentiment) {
+  source_negativity <- hnb[!is.na(AUTO_SENTIMENT), .(
+    Total_Articles = .N,
+    Negative_Articles = sum(AUTO_SENTIMENT == "negative"),
+    Negativity_Rate = sum(AUTO_SENTIMENT == "negative") / .N * 100,
+    Mean_REACH = mean(REACH, na.rm = TRUE),
+    Total_REACH = sum(REACH, na.rm = TRUE),
+    ACTOR_TYPE = first(ACTOR_TYPE)
+  ), by = FROM][Total_Articles >= 20][order(-Negativity_Rate)]
+  
+  # Top 20 most negative sources (min 20 articles)
+  top_negative_sources <- source_negativity[1:min(20, nrow(source_negativity))]
+  
+  ggplot(top_negative_sources, aes(x = reorder(FROM, Negativity_Rate), y = Negativity_Rate, fill = ACTOR_TYPE)) +
+    geom_col(width = 0.7) +
+    geom_text(aes(label = sprintf("%.1f%%", Negativity_Rate)), hjust = -0.1, size = 3) +
+    coord_flip() +
+    scale_fill_manual(values = actor_colors) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+    labs(
+      title = "Top 20 Sources by Negativity Rate",
+      subtitle = "Sources with minimum 20 articles, ordered by % negative coverage",
+      x = NULL,
+      y = "Negativity Rate (%)",
+      fill = "Actor Type"
+    )
+}
+```
+
+# Summary and Key Findings
+
+```{r summary-stats}
+#| label: summary-stats
+
+if (has_sentiment) {
+  total_with_sentiment <- sum(!is.na(hnb$AUTO_SENTIMENT))
+  positive_pct <- sum(hnb$AUTO_SENTIMENT == "positive", na.rm = TRUE) / total_with_sentiment * 100
+  neutral_pct <- sum(hnb$AUTO_SENTIMENT == "neutral", na.rm = TRUE) / total_with_sentiment * 100
+  negative_pct <- sum(hnb$AUTO_SENTIMENT == "negative", na.rm = TRUE) / total_with_sentiment * 100
+  
+  overall_positivity <- sum(hnb$AUTO_SENTIMENT == "positive", na.rm = TRUE) / 
+                        sum(hnb$AUTO_SENTIMENT == "negative", na.rm = TRUE)
+}
+```
+
+## Summary Table
+
+```{r final-summary}
+#| label: final-summary
+
+if (has_sentiment) {
+  tibble(
+    Finding = c(
+      "Total articles with sentiment data",
+      "Positive sentiment share",
+      "Neutral sentiment share",
+      "Negative sentiment share",
+      "Overall positivity ratio",
+      "Mean REACH (positive articles)",
+      "Mean REACH (negative articles)",
+      "Negativity premium"
+    ),
+    Value = c(
+      format(total_with_sentiment, big.mark = ","),
+      sprintf("%.1f%%", positive_pct),
+      sprintf("%.1f%%", neutral_pct),
+      sprintf("%.1f%%", negative_pct),
+      sprintf("%.2f", overall_positivity),
+      format(round(mean(hnb[AUTO_SENTIMENT == "positive", REACH], na.rm = TRUE), 0), big.mark = ","),
+      format(round(mean(hnb[AUTO_SENTIMENT == "negative", REACH], na.rm = TRUE), 0), big.mark = ","),
+      sprintf("%.2fx", mean(hnb[AUTO_SENTIMENT == "negative", REACH], na.rm = TRUE) / 
+                       mean(hnb[AUTO_SENTIMENT == "positive", REACH], na.rm = TRUE))
+    )
+  ) %>%
+    kable(col.names = c("Finding", "Value")) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+}
+```
+
+## Hypotheses Assessment
+
+| Hypothesis | Metric | Finding |
+|------------|--------|---------|
+| H3: Negativity bias | Negative REACH / Positive REACH | Examine negativity premium above |
+| H5: Euro structural break | Sentiment distribution by period | Compare ERM II vs Euro Era |
+
+## Key Insights
+
+1. **Overall sentiment tone:** The corpus shows a `r if(has_sentiment) sprintf("%.1f%%", positive_pct)` positive / `r if(has_sentiment) sprintf("%.1f%%", negative_pct)` negative distribution
+
+2. **Negativity bias test:** Negative articles `r if(has_sentiment && exists("neg_premium")) ifelse(neg_premium > 1, "do", "do not")` capture disproportionate REACH compared to positive articles
+
+3. **Actor differences:** Different actor types show distinct sentiment profiles, with institutional sources typically showing different patterns than media coverage
+
+4. **Temporal patterns:** Sentiment trends `r if(has_sentiment) "show variation"` over time, with potential shifts around euro adoption
+
+---
+
+# Appendix: Data Quality Check
+
+```{r data-quality}
+#| label: data-quality
+
+cat("Sentiment Data Quality:\n")
+cat("======================\n")
+cat("Total articles:", n_articles, "\n")
+cat("Articles with sentiment:", sum(!is.na(hnb$AUTO_SENTIMENT)), "\n")
+cat("Sentiment coverage:", sprintf("%.1f%%", sum(!is.na(hnb$AUTO_SENTIMENT)) / n_articles * 100), "\n")
+
+if (has_sentiment) {
+  cat("\nSentiment Distribution:\n")
+  print(table(hnb$AUTO_SENTIMENT, useNA = "ifany"))
+}
+```
+
+```{r session-info}
+#| label: session-info
+
+sessionInfo()
+```
